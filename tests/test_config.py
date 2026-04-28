@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from src.config import ExperimentConfig
+from crowdsegmenter.config import ExperimentConfig
 
 def test_experiment_config_loading(tmp_path):
     # Create a temporary config file

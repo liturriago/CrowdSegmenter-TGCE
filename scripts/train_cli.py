@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.config import ExperimentConfig
-from src.training.engine import Trainer
+from crowdsegmenter.config import ExperimentConfig
+from crowdsegmenter.engine import Trainer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
