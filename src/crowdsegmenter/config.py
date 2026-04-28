@@ -25,10 +25,11 @@ class ExperimentMetadata(BaseModel):
     seed: int = Field(42, description="Random seed for reproducibility")
 
 class ExperimentConfig(BaseModel):
-    metadata: ExperimentMetadata
+    
     data: DataConfig
     model: ModelConfig
     training: TrainConfig
+    metadata: ExperimentMetadata
 
     @classmethod
     def from_yaml(cls, yaml_path: str | Path) -> "ExperimentConfig":
