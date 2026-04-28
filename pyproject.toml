@@ -29,13 +29,8 @@ dev = [
     "mypy"
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["src*", "scripts*"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v -ra"
