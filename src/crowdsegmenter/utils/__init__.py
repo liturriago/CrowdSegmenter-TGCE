@@ -1,3 +1,3 @@
 """
-Utility functions for the CrowdSegmenter-TGCE project.
+Contains the utility functions for the CrowdSegmenter-TGCE project.
 """
