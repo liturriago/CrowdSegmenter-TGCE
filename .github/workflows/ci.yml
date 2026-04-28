@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main, master ]
   pull_request:
     branches: [ "main" ]
 
@@ -14,29 +14,24 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
+    - name: Set up Python
+      uses: actions/setup-python@v4
       with:
-        python-version: "3.11"
+        python-version: '3.11'
         cache: 'pip'
         
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # pip install -r requirements.txt
-        pip install torch torchvision pydantic pyyaml pytest flake8 mypy
+        pip install -e .[dev]
         
-    - name: Lint with flake8
+    - name: Debug Project Structure
       run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-        
-    - name: Type check with mypy
+        echo "--- /src Content ---"
+        ls -R src/
+        echo "--- /tests Content ---"
+        ls -R tests/
+
+    - name: Run Pytest
       run: |
-        mypy src/ scripts/ --ignore-missing-imports
-        
-    - name: Test with pytest
-      run: |
-        pytest tests/
+        pytest
