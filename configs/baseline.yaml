@@ -1,0 +1,21 @@
+metadata:
+  experiment_name: "baseline_medical"
+  domain: "Medical"
+  seed: 42
+
+data:
+  dataset_path: "./data/medical"
+  batch_size: 16
+  num_workers: 4
+  img_size: 256
+
+model:
+  architecture: "UNet"
+  in_channels: 1 # Medical typically uses 1 channel (grayscale)
+  num_classes: 1
+
+training:
+  num_epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  loss_function: "TGCE_SSPS"
