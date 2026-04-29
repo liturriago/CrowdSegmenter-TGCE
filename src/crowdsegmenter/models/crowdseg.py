@@ -90,10 +90,13 @@ class ConvBlockAnnRelCM(nn.Module):
     
     Args:
         input_channels: Number of input channels.
+        image_size: Size of the input image.
     """
 
-    def __init__(self, input_channels: int) -> None:
+    def __init__(self, input_channels: int, image_size: int) -> None:
         super().__init__()
+
+        pool_spatial_size = image_size // 16
 
         self.conv = nn.Conv2d(in_channels=input_channels, out_channels=8, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(in_channels=8, out_channels=4, kernel_size=3, stride=1, padding=1)
@@ -105,11 +108,11 @@ class ConvBlockAnnRelCM(nn.Module):
         self.conv_bn = nn.BatchNorm2d(8)
         self.conv_bn2 = nn.BatchNorm2d(4)
         
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((pool_spatial_size, pool_spatial_size))
         
         self.flatten = nn.Flatten()
         self.fc_bn = nn.BatchNorm1d(128)
-        self.fc1 = nn.Linear(in_features=4, out_features=128) 
+        self.fc1 = nn.Linear(in_features=4 * (pool_spatial_size ** 2), out_features=128) 
         self.fc2 = nn.Linear(in_features=128, out_features=64)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
