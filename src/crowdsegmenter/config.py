@@ -1,6 +1,7 @@
 import yaml
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from typing import List, Optional, Literal
 
 class DataConfig(BaseModel):
     dataset_path: str = Field(..., description="Path to the dataset")
@@ -9,9 +10,31 @@ class DataConfig(BaseModel):
     img_size: int = Field(256, description="Image resizing dimension", gt=0)
 
 class ModelConfig(BaseModel):
-    architecture: str = Field(..., description="Model architecture (e.g., UNet)")
-    in_channels: int = Field(3, description="Number of input channels", gt=0)
-    num_classes: int = Field(1, description="Number of output classes", gt=0)
+    model_name: Literal["MV", "STAPLE", "Annot-Harmony", "CrowdSeg"] | None = Field(
+        None, 
+        description="Model architecture to use"
+    )
+    num_annotators: int | None = Field(
+        None, 
+        description="Number of annotators", 
+        gt=0
+    )
+    in_channels: int | None = Field(3, description="Number of input channels", gt=0)
+    out_channels: int | None = Field(1, description="Number of output channels", gt=0)
+    pretrained: bool | None = Field(True, description="Whether to use pretrained weights")
+    decoder_channels: List[int] | None = Field(
+        default=[256, 128, 64, 64], 
+        description="Decoder channel dimensions"
+    )
+    use_residual: bool | None = Field(True, description="Whether to use residual connections")
+    seg_head_activation: Literal["sigmoid", "softmax", "tanh", "relu"] | None = Field(
+        None, 
+        description="Segmentation head activation"
+    )
+    annotator_activation: Literal["sigmoid", "softmax", "tanh", "relu"] | None = Field(
+        None, 
+        description="Annotator head activation"
+    )
 
 class TrainConfig(BaseModel):
     num_epochs: int = Field(100, description="Total number of training epochs", gt=0)
