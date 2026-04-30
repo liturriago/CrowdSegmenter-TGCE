@@ -20,7 +20,7 @@ class ModelConfig(BaseModel):
         gt=0
     )
     in_channels: int | None = Field(3, description="Number of input channels", gt=0)
-    out_channels: int | None = Field(1, description="Number of output channels", gt=0)
+    num_classes: int | None = Field(1, description="Number of classes", gt=0)
     pretrained: bool | None = Field(True, description="Whether to use pretrained weights")
     decoder_channels: List[int] | None = Field(
         default=[256, 128, 64, 64], 

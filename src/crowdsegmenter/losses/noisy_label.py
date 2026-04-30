@@ -3,7 +3,6 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Tuple
 
-
 class NoisyLabelLoss(nn.Module):
     """
     Noisy Label Loss for crowdsourcing methods, using the Cross-Entropy (CE) configuration.

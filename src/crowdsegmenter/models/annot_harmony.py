@@ -21,7 +21,8 @@ from torchvision.models import resnet34
 from crowdsegmenter.config import ModelConfig
 
 def get_activation(activation: Optional[str]) -> Optional[nn.Module]:
-    """Get activation function based on name or module.
+    """
+    Get activation function based on name or module.
     
     Args:
         activation: Activation function name.
@@ -51,7 +52,8 @@ def get_activation(activation: Optional[str]) -> Optional[nn.Module]:
 
 
 class ConvBlock(nn.Module):
-    """Basic convolution block with BatchNorm and ReLU.
+    """
+    Basic convolution block with BatchNorm and ReLU.
     
     Args:
         in_channels: Number of input channels.
@@ -94,7 +96,8 @@ class ConvBlock(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    """Residual block for decoder with skip connection.
+    """
+    Residual block for decoder with skip connection.
     
     Args:
         in_channels: Number of input channels.
@@ -134,7 +137,8 @@ class ResidualBlock(nn.Module):
 
 
 class ResNet34Encoder(nn.Module):
-    """ResNet34-based encoder for ResUNet.
+    """
+    ResNet34-based encoder for ResUNet.
     
     Args:
         pretrained: Whether to use pretrained weights.
@@ -209,7 +213,8 @@ class ResNet34Encoder(nn.Module):
         return x, skip_connections
 
 class Decoder(nn.Module):
-    """ResUNet decoder with skip connections and residual blocks.
+    """
+    ResUNet decoder with skip connections and residual blocks.
     
     Args:
         encoder_channels: List of encoder channel dimensions.
@@ -251,7 +256,8 @@ class Decoder(nn.Module):
             )
 
     def _make_decoder_block(self, in_channels: int, out_channels: int) -> nn.Module:
-        """Create a decoder block.
+        """
+        Create a decoder block.
         
         Args:
             in_channels: Number of input channels.
@@ -276,7 +282,8 @@ class Decoder(nn.Module):
         bottleneck: torch.Tensor, 
         skip_connections: List[torch.Tensor]
     ) -> torch.Tensor:
-        """Forward pass through the decoder.
+        """
+        Forward pass through the decoder.
         
         Args:
             bottleneck: Bottleneck features from encoder.
@@ -318,7 +325,8 @@ class Decoder(nn.Module):
 
 
 class SegmentationHead(nn.Module):
-    """Final segmentation head that outputs class predictions.
+    """
+    Final segmentation head that outputs class predictions.
     
     Args:
         in_channels: Number of input channels.
@@ -404,7 +412,7 @@ class AnnotHarmony(nn.Module):
     """
     AnnotHarmony architecture with ResNet34 backbone-based ResUNet.
 
-    Clean pipeline: x → encoder → decoder (with skip connections) → segmentation_head → final_activation
+    Clean pipeline: x → encoder → decoder (with skip connections) → segmentation_head and annotator_head
     
     Args:
         config: Model configuration object (from ExperimentConfig).  
@@ -415,7 +423,7 @@ class AnnotHarmony(nn.Module):
         >>> # Custom decoder channels
         >>> model = AnnotHarmony(
         ...     in_channels=3,
-        ...     out_channels=1,
+        ...     num_classes=1,
         ...     decoder_channels=[256, 128, 64, 64],
         ...     seg_head_activation='sigmoid',
         ...     annotator_activation='softmax'
@@ -456,9 +464,8 @@ class AnnotHarmony(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, multihot: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Forward pass through ResUNet.
-        
-        Clean pipeline: x → encoder → decoder → segmentation_head → final_activation
+        """
+        Forward pass through ResUNet.
         
         Args:
             x: Input tensor of shape (batch_size, in_channels, height, width).
@@ -468,17 +475,6 @@ class AnnotHarmony(nn.Module):
             Tuple of:
                 - Segmentation output tensor of shape (batch_size, out_channels, height, width).
                 - Annotator confidence scores of shape (batch_size, num_annotators, height, width).
-            
-        Example:
-            >>> model = AnnotHarmony(in_channels=3, out_channels=1)
-            >>> 
-            >>> # Custom decoder channels
-            >>> model = AnnotHarmony(
-            ...     in_channels=3,
-            ...     out_channels=1,
-            ...     decoder_channels=[256, 128, 64, 64],
-            ...     final_activation='sigmoid'
-            ... )
         """
         input_size = x.shape[2:]  # Store original input size (H, W)
         

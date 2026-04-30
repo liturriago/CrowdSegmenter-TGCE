@@ -1,5 +1,15 @@
 """
+CrowdSeg architecture with ResNet34 backbone-based ResUNet.
 
+CrowdSeg is a crowd segmentation model that combines a ResNet34 backbone with a ResUNet-style 
+decoder and an attention-based annotator module. It is designed to segment objects in images 
+that are partially occluded or crowded.
+
+Key Features:
+    - ResNet34 backbone for feature extraction
+    - ResUNet-style decoder with skip connections
+    - Configurable number of annotators
+    - Configurable activation functions for segmentation
 """
 
 from typing import List, Optional, Tuple
@@ -89,16 +99,16 @@ class ConvBlockAnnRelCM(nn.Module):
     Convolutional block for annotator head with relu activation.
     
     Args:
-        input_channels: Number of input channels.
+        in_channels: Number of input channels.
         image_size: Size of the input image.
     """
 
-    def __init__(self, input_channels: int, image_size: int) -> None:
+    def __init__(self, in_channels: int, image_size: int) -> None:
         super().__init__()
 
         pool_spatial_size = image_size // 16
 
-        self.conv = nn.Conv2d(in_channels=input_channels, out_channels=8, kernel_size=3, stride=1, padding=1)
+        self.conv = nn.Conv2d(in_channels=in_channels, out_channels=8, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(in_channels=8, out_channels=4, kernel_size=3, stride=1, padding=1)
         self.conv3 = nn.Conv2d(in_channels=4, out_channels=4, kernel_size=3, stride=1, padding=1)
         
@@ -409,23 +419,70 @@ class SegmentationHead(nn.Module):
 
 class AnnRelCM(nn.Module):
     """
+    Annotator Reliability Confusion Matrix Module.
     
+    Args:
+        num_classes: Number of classes.
+        num_annotators: Number of annotators.
+        image_size: Size of the input images.
+        in_channels: Number of input channels.
     """
 
-    def __init__(self, num_classes: int, num_annotators: int, image_size: int, ) -> None:
+    def __init__(self, num_classes: int, num_annotators: int, image_size: int, in_channels: int) -> None:
+        super().__init__()
         self.num_classes = num_classes
         self.num_annotators = num_annotators
         self.image_size = image_size
-        self.convblockann = ConvBlockAnnRelCM(num_classes)
-        self.num_annotators = num_annotators
+        self.conv_layers = ConvBlockAnnRelCM(in_channels, image_size)
+        self.dense_annotator = torch.nn.Linear(num_annotators, 64)
+        self.dense_output = torch.nn.Linear(128, num_classes ** 2)
+        self.norm = torch.nn.BatchNorm1d(num_classes ** 2)
+        self.act = torch.nn.Softplus()
 
-        super().__init__()
+    def forward(self, x: torch.Tensor, onehot: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass through the annotator module.
+        
+        Args:
+            x: Input tensor.
+            onehot: One-hot annotators IDs.
+            
+        Returns:
+            Output tensor.
+        """
+        A_feat = self.dense_annotator(onehot) 
+        x = self.conv_layers(x)
+        output = self.dense_output(torch.hstack((A_feat, x)))
+        output = self.norm(output)
+        output = self.act(output.view(-1, self.num_classes, self.num_classes))
+        all_weights = output.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, self.image_size, self.image_size)
+        y = all_weights.view(-1, self.num_classes**2, self.image_size, self.image_size)
 
-
+        return y
 
 class CrowdSeg(nn.Module):
     """
+    CrowdSeg architecture with ResNet34 backbone-based ResUNet.
+
+    Clean pipeline: x → encoder → decoder (with skip connections) → segmentation_head and ann_rel_cm
     
+    Args:
+        config: Model configuration object (from ExperimentConfig).  
+        
+    Example:    
+        >>> model = CrowdSeg(config: ModelConfig)
+        >>> 
+        >>> # Custom decoder channels
+        >>> model = CrowdSeg(
+        ... in_channels: int = 3,
+        ... num_classes: int = 1,
+        ... num_annotators: int = 32,
+        ... image_size: int = 128,
+        ... decoder_channels: list = None,
+        ... use_residual: bool = True,
+        ... pretrained: bool = True,
+        ... seg_head_activation: Optional[str] = None, 
+        ... )
     """
     
     def __init__(self,config: ModelConfig) -> None:    
@@ -450,17 +507,32 @@ class CrowdSeg(nn.Module):
         # Segmentation head
         self.segmentation_head = SegmentationHead(
             in_channels=config.decoder_channels[-1], 
-            out_channels=config.out_channels,
+            out_channels=config.num_classes,
             activation=config.seg_head_activation
         )   
         
         # Annotator head
-        
+        self.ann_rel_cm = AnnRelCM(
+            num_classes=config.num_classes,
+            num_annotators=config.num_annotators,
+            image_size=config.image_size,
+            in_channels=config.decoder_channels[-1]
+        )
 
-    def forward(self, x: torch.Tensor, multihot: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, onehot: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
+        Forward pass through the CrowdSeg model.
         
+        Args:
+            x: Input tensor of shape (batch_size, in_channels, height, width).
+            onehot: One-hot encoded annotator labels of shape (batch_size, num_annotators).
+        
+        Returns:
+            Tuple of:
+                - Segmentation output tensor of shape (batch_size, num_classes, height, width).
+                - AnnRelCM output tensor of shape (batch_size, num_classes, num_classes, height, width).
         """
+
         input_size = x.shape[2:]  # Store original input size (H, W)
         
         # x → encoder
@@ -472,10 +544,10 @@ class CrowdSeg(nn.Module):
         # decoder → segmentation_head
         output = self.segmentation_head(decoded, input_size)
 
-        # skip annotation if multihot is not provided
-        if multihot is not None:
+        # skip annotation if onehot is not provided
+        if onehot is not None:
             # decoder → annotator head
-            annotator_output = self.annotator_head(decoded, multihot)
+            annotator_output = self.ann_rel_cm(decoded, onehot)
             
             # return both segmentation and annotator outputs
             return output, annotator_output
