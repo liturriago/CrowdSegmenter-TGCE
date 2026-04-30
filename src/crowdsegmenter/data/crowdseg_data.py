@@ -14,11 +14,11 @@ from torchvision.transforms import InterpolationMode
 from typing import Union, List, Tuple, Optional, Dict
 from crowdsegmenter.config import DataConfig 
 
-class AnnotHarmonyDataset(Dataset):
-    """Dataset for handling multi-annotator segmentation data.
-
-    This dataset loads images and their corresponding segmentation masks from multiple
-    annotators and ground truth, supporting synchronization of transforms.
+class CrowdSegDataset(Dataset):
+    """Dataset for stochastic training of annotator reliability models.
+    
+    Instead of returning all masks, it randomly selects ONE valid annotator 
+    per sample and returns their specific mask and One-Hot ID.
     """
     
     def __init__(
@@ -43,6 +43,7 @@ class AnnotHarmonyDataset(Dataset):
         if not self.data_path.exists():
             raise FileNotFoundError(f"Partition directory not found: {self.data_path}")
 
+        # Collect image files
         supported_formats = ['*.png', '*.jpg', '*.jpeg']
         self.patch_files = []
         for fmt in supported_formats:
@@ -51,7 +52,8 @@ class AnnotHarmonyDataset(Dataset):
         self.patch_files = sorted(self.patch_files, key=self._alphanumeric_key)
         self.file_names = [Path(f).name for f in self.patch_files]
 
-        self.masks_path, self.gt_masks_path = self._prepare_mask_paths()
+        # Index available annotators per sample
+        self.masks_db, self.gt_masks_path = self._index_annotators()
 
     def _alphanumeric_key(self, s: str) -> List[Union[int, str]]:
         """Splits a string into a list of integers and strings for natural sorting.
@@ -64,34 +66,39 @@ class AnnotHarmonyDataset(Dataset):
         """
         return [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', s)]
 
-    def _prepare_mask_paths(self) -> Tuple[List[List[str]], List[List[Path]]]:
-        """Indexes all mask and ground truth paths for the dataset partition.
+    def _index_annotators(self) -> Tuple[List[Dict[int, List[str]]], List[List[Path]]]:
+        """Indexes which annotators labeled each image to allow fast random selection.
 
         Returns:
             A tuple containing:
-                - masks_path: List of lists containing paths to annotator masks.
+                - masks_db: List of dictionaries mapping annotator IDs to mask paths.
                 - gt_masks_path: List of lists containing paths to ground truth masks.
         """
         mask_root = self.data_path / self.masks_folder
+        
+        # Get sorted list of annotators to maintain consistent One-Hot indexing
         list_annotators = sorted([
             ann for ann in os.listdir(mask_root)
             if os.path.isdir(mask_root / ann) and ann != self.ground_truth_folder
         ], key=self._alphanumeric_key)
 
-        masks_path = []
+        masks_db = []
         gt_masks_path = []
 
-        for sample in tqdm(self.file_names, desc=f"Indexing {self.partition} masks"):
+        for sample in tqdm(self.file_names, desc=f"Indexing {self.partition} annotators"):
+            # Map valid annotator IDs to their specific class mask paths
+            available_for_sample = {}
+            for idx, ann_name in enumerate(list_annotators):
+                # We check class_0 existence as a signal of annotation availability
+                proxy_path = mask_root / ann_name / 'class_0' / sample
+                if proxy_path.exists():
+                    available_for_sample[idx] = [
+                        str(mask_root / ann_name / f'class_{c}' / sample) 
+                        for c in range(self.config.num_classes)
+                    ]
+            masks_db.append(available_for_sample)
 
-            if self.config.load_annotators:
-                sample_masks = []
-                for c in range(self.config.num_classes):
-                    for ann in list_annotators:
-                        p = mask_root / ann / f'class_{c}' / sample
-                        sample_masks.append(str(p))
-                masks_path.append(sample_masks)
-
-
+            # Standard Ground Truth indexing
             if self.config.load_ground_truth:
                 sample_gt = []
                 for c in range(self.config.num_classes):
@@ -99,11 +106,10 @@ class AnnotHarmonyDataset(Dataset):
                     sample_gt.append(p)
                 gt_masks_path.append(sample_gt)
 
-        return masks_path, gt_masks_path
+        return masks_db, gt_masks_path
 
     def _load_tensor(self, path: str, mode: ImageReadMode, normalize: bool = True) -> torch.Tensor:
-        """
-        Loads an image or mask from a file and converts it to a torch Tensor.
+        """Loads an image or mask from a file and converts it to a torch Tensor.
 
         Args:
             path: Path to the image file.
@@ -114,9 +120,9 @@ class AnnotHarmonyDataset(Dataset):
             A torch Tensor representing the image.
         """
         if not Path(path).exists():
-            if mode == ImageReadMode.GRAY:
-                return torch.full((1, *self.config.image_size), self.config.ignored_value, dtype=torch.float32)
-            return torch.zeros((3, *self.config.image_size), dtype=torch.float32)
+            val = self.config.ignored_value if mode == ImageReadMode.GRAY else 0.0
+            channels = 1 if mode == ImageReadMode.GRAY else 3
+            return torch.full((channels, *self.config.image_size), val, dtype=torch.float32)
         
         tensor = torchvision.io.read_image(path, mode=mode)
         interpolation = InterpolationMode.NEAREST if mode == ImageReadMode.GRAY else InterpolationMode.BILINEAR
@@ -133,38 +139,41 @@ class AnnotHarmonyDataset(Dataset):
         return len(self.patch_files)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
-        """Retrieves a single data sample (image, masks, and ground truth) by index.
+        """Retrieves a single data sample (image, one annotator mask, and ground truth) by index.
 
         Args:
             idx: Index of the sample to retrieve.
 
         Returns:
-            A tuple containing the image tensor, annotator masks tensor (if enabled),
-            annotator existence one-hot tensor (if enabled), and ground truth tensor (if enabled).
+            A tuple containing the image tensor, a randomly selected annotator mask tensor,
+            the one-hot ID of the selected annotator, and the ground truth tensor (if enabled).
         """
-
+        # Load Base Image
         image = self._load_tensor(self.patch_files[idx], ImageReadMode.RGB, normalize = self.normalize)
-        
         results = [image]
 
-
+        # One-Hot Annotator Logic
         if self.config.load_annotators:
-            m_paths = self.masks_path[idx]
-            masks = torch.zeros(self.config.num_annotators * self.config.num_classes, *self.config.image_size)
-            anns_onehot = torch.zeros(self.config.num_annotators)
+            available = self.masks_db[idx]
             
-            for i, p in enumerate(m_paths):
-                mask = self._load_tensor(p, ImageReadMode.GRAY, normalize = self.normalize)
-                masks[i] = mask.squeeze(0)
-                
-                ann_idx = i % self.config.num_annotators
-                if torch.any(mask == self.config.ignored_value):
-                    anns_onehot[ann_idx] = 0.0
-                else:
-                    anns_onehot[ann_idx] = 1.0
-            
-            results.extend([masks, anns_onehot])
+            # Select ONE annotator randomly from available ones for this specific sample
+            # If no annotators available (rare), fallback to index 0 with ignored values
+            if available:
+                chosen_idx = random.choice(list(available.keys()))
+                ann_paths = available[chosen_idx]
+                ann_mask = torch.zeros(self.config.num_classes, *self.config.image_size)
+                for i, p in enumerate(ann_paths):
+                    ann_mask[i] = self._load_tensor(p, ImageReadMode.GRAY, normalize = self.normalize).squeeze(0)
+            else:
+                chosen_idx = 0
+                ann_mask = torch.full((self.config.num_classes, *self.config.image_size), self.config.ignored_value)
 
+            # Create One-Hot ID vector [num_annotators]
+            one_hot = torch.zeros(self.config.num_annotators)
+            one_hot[chosen_idx] = 1.0
+            results.extend([ann_mask, one_hot])
+
+        # Load Ground Truth
         if self.config.load_ground_truth:
             gt_paths = self.gt_masks_path[idx]
             gt_tensor = torch.zeros(len(gt_paths), *self.config.image_size)
@@ -172,6 +181,7 @@ class AnnotHarmonyDataset(Dataset):
                 gt_tensor[i] = self._load_tensor(str(p), ImageReadMode.GRAY, normalize = self.normalize).squeeze(0)
             results.append(gt_tensor)
 
+        # Synchronized Geometric Augmentation
         if self.transform and self.partition == 'train':
             results = self._apply_sync_transform(results)
 
@@ -186,7 +196,6 @@ class AnnotHarmonyDataset(Dataset):
         Returns:
             The list of transformed tensors.
         """
-
         if random.random() > 0.5:
             tensors = [TF.hflip(t) if t.ndim > 1 else t for t in tensors]
         if random.random() > 0.5:
@@ -196,11 +205,11 @@ class AnnotHarmonyDataset(Dataset):
         return tensors
 
 
-class AnnotHarmonyDataLoader:
-    """Utility class to manage DataLoaders for different dataset partitions.
+class CrowdSegDataLoader:
+    """Manager for CrowdSeg DataLoaders with robust partition mapping.
 
     This class handles the creation of training, validation, and testing split loaders
-    with appropriate transforms and configurations.
+    using the CrowdSegDataset.
     """
 
     def __init__(self, config: DataConfig):
@@ -208,7 +217,7 @@ class AnnotHarmonyDataLoader:
         self.transforms = self._get_transforms()
         self.partitions = config.partitions
         self.images_folder = config.images_folder
-        self.masks_folder = config.masks_folder
+        self.masks_folder = config.masks_folder 
         self.ground_truth_folder = config.ground_truth_folder
         self.normalize = config.normalize
 
@@ -218,14 +227,13 @@ class AnnotHarmonyDataLoader:
         Returns:
             A dictionary mapping partition keys ('train', 'inference') to their transforms.
         """
-
         return {
             'train': transforms.Compose([
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                transforms.Normalize(self.config.mean, self.config.std) if hasattr(self.config, 'mean') else transforms.Lambda(lambda x: x)
+                transforms.Normalize(self.config.mean, self.config.std)
             ]),
             'inference': transforms.Compose([
-                transforms.Normalize(self.config.mean, self.config.std) if hasattr(self.config, 'mean') else transforms.Lambda(lambda x: x)
+                transforms.Normalize(self.config.mean, self.config.std)
             ]),
         }
 
@@ -235,20 +243,20 @@ class AnnotHarmonyDataLoader:
         Returns:
             A tuple containing (train_loader, val_loader, test_loader).
         """
-
         loaders = {}
 
         for split in self.partitions:
-            is_train = split in ['Train', 'train', 'Training', 'training']
+            is_train = split.lower() in ['train', 'training']
             transform_type = 'train' if is_train else 'inference'
-
+            
+            # Robust key mapping
             tag = split.lower()
             if 'train' in tag: key = 'train'
             elif 'val' in tag: key = 'val'
             elif 'test' in tag: key = 'test'
             else: key = tag
-            
-            dataset = AnnotHarmonyDataset(
+
+            dataset = CrowdSegDataset(
                 config=self.config,
                 partition=split,
                 images_folder=self.images_folder,

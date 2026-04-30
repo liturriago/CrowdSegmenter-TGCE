@@ -383,12 +383,13 @@ class AttentionAnnRel(nn.Module):
         )
         self.activation = get_activation(activation)
 
-    def forward(self, x: torch.Tensor, multihot: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, multihot: torch.Tensor, target_size: Tuple[int, int]) -> torch.Tensor:
         """Forward pass through the annotator head.
         
         Args:
             x: Input tensor.
             multihot: Multi-hot encoded annotator labels.
+            target_size: Target output size (H, W).
             
         Returns:
             Annotator output tensor.
@@ -404,7 +405,9 @@ class AttentionAnnRel(nn.Module):
         
         if self.activation is not None:
             out = self.activation(out)
-            
+        
+        out = F.interpolate(out, size=target_size, mode='bilinear', align_corners=False)
+        
         return out
 
 
@@ -452,7 +455,7 @@ class AnnotHarmony(nn.Module):
         # Segmentation head
         self.segmentation_head = SegmentationHead(
             in_channels=config.decoder_channels[-1], 
-            out_channels=config.out_channels,
+            out_channels=config.num_classes,
             activation=config.seg_head_activation
         )   
         
@@ -490,7 +493,7 @@ class AnnotHarmony(nn.Module):
         # skip annotation if multihot is not provided
         if multihot is not None:
             # decoder → annotator head
-            annotator_output = self.annotator_head(decoded, multihot)
+            annotator_output = self.annotator_head(decoded, multihot, input_size)
             
             # return both segmentation and annotator outputs
             return output, annotator_output
