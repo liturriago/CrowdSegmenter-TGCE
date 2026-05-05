@@ -512,7 +512,7 @@ class CrowdSeg(nn.Module):
         )   
         
         # Annotator head
-        self.ann_rel_cm = AnnRelCM(
+        self.annotator_head = AnnRelCM(
             num_classes=config.num_classes,
             num_annotators=config.num_annotators,
             image_size=config.image_size,
@@ -547,7 +547,7 @@ class CrowdSeg(nn.Module):
         # skip annotation if onehot is not provided
         if onehot is not None:
             # decoder → annotator head
-            annotator_output = self.ann_rel_cm(decoded, onehot)
+            annotator_output = self.annotator_head(decoded, onehot)
             
             # return both segmentation and annotator outputs
             return output, annotator_output

@@ -25,18 +25,14 @@ class AnnotHarmonyDataset(Dataset):
         self, 
         config: DataConfig, 
         partition: str, 
-        images_folder: str,
-        masks_folder: str,
-        ground_truth_folder: str,
-        normalize: bool = True,
         transform: transforms.Compose | None = None
     ):
         self.config = config
         self.partition = partition
-        self.images_folder = images_folder
-        self.masks_folder = masks_folder
-        self.ground_truth_folder = ground_truth_folder
-        self.normalize = normalize
+        self.images_folder = config.images_folder
+        self.masks_folder = config.masks_folder
+        self.ground_truth_folder = config.ground_truth_folder
+        self.normalize = config.normalize
         self.transform = transform
         self.data_path = Path(config.data_dir) / self.partition
 
@@ -172,7 +168,7 @@ class AnnotHarmonyDataset(Dataset):
                 gt_tensor[i] = self._load_tensor(str(p), ImageReadMode.GRAY, normalize = self.normalize).squeeze(0)
             results.append(gt_tensor)
 
-        if self.transform and self.partition == 'train':
+        if self.transform and self.partition in ['Train', 'train', 'Training', 'training']:
             results = self._apply_sync_transform(results)
 
         return tuple(results)
@@ -205,12 +201,8 @@ class AnnotHarmonyDataLoader:
 
     def __init__(self, config: DataConfig):
         self.config = config
-        self.transforms = self._get_transforms()
+        self.transforms = config.transforms
         self.partitions = config.partitions
-        self.images_folder = config.images_folder
-        self.masks_folder = config.masks_folder
-        self.ground_truth_folder = config.ground_truth_folder
-        self.normalize = config.normalize
 
     def _get_transforms(self) -> Dict[str, transforms.Compose]:
         """Defines the data transformations for different pipeline stages.
@@ -240,7 +232,10 @@ class AnnotHarmonyDataLoader:
 
         for split in self.partitions:
             is_train = split in ['Train', 'train', 'Training', 'training']
-            transform_type = 'train' if is_train else 'inference'
+            transform = None
+            if self.transforms:
+                transform_type = 'train' if is_train else 'inference'
+                transform = self._get_transforms()[transform_type]
 
             tag = split.lower()
             if 'train' in tag: key = 'train'
@@ -251,11 +246,7 @@ class AnnotHarmonyDataLoader:
             dataset = AnnotHarmonyDataset(
                 config=self.config,
                 partition=split,
-                images_folder=self.images_folder,
-                masks_folder=self.masks_folder,
-                ground_truth_folder=self.ground_truth_folder,
-                normalize = self.normalize,
-                transform=self.transforms[transform_type]
+                transform=transform
             )
 
             loaders[key] = DataLoader(

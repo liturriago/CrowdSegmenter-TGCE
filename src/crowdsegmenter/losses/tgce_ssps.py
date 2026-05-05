@@ -37,26 +37,27 @@ class TGCE_SSPS(nn.Module):
         self.smooth = smooth
         self.lambda_factor = lambda_factor
 
-    def forward(self, y_pred: Tensor, annotations: Tensor) -> Tensor:
+    def forward(self, seg_pred: Tensor, ann_pred: Tensor, annotations: Tensor) -> Tensor:
         """
         Forward pass to compute TGCE-SS loss.
 
         Args:
-            y_pred (Tensor): Network predictions with shape 
-                (N, K + R, H, W), where first K channels are class probs
-                and next R channels are reliability scores per annotator.
+            seg_pred (Tensor): Predicted probabilities for each class, with shape 
+                (N, K, H, W).
+            ann_pred (Tensor): Predicted reliability for each annotator, with shape 
+                (N, R, H, W).
             annotations (Tensor): Annotator masks with shape 
                 (N, K * R, H, W).
 
         Returns:
             Tensor: Scalar loss value.
         """
-        device = y_pred[0].device
+        device = seg_pred.device
         epsilon = 1e-8
 
         # Split predictions: classes, reliability
-        y_pred_classes = y_pred[0]
-        Lambda_r = y_pred[1]
+        y_pred_classes = seg_pred
+        Lambda_r = ann_pred
 
         # Reshape annotations into (N, K, R, H, W)
         N, _, H, W = y_pred_classes.shape

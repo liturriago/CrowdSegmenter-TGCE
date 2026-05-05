@@ -16,9 +16,11 @@ class DataConfig(BaseModel):
     num_classes: int = Field(default=1, description="Number of classes", gt=0)
     num_annotators: int = Field(default=1, description="Number of annotators", gt=0)
     
+    
     image_size: List[int] = Field(default=[256, 256], description="Image resizing dimensions (H, W)")
     ignored_value: int = Field(default=255, description="Pixel value to ignore")
     normalize: bool = Field(default=True, description="Whether to normalize images")
+    transforms: bool = Field(default=True, description="Whether to apply transforms")
     
     mean: Optional[List[float]] = Field(default=[0.485, 0.456, 0.406], description="Mean for image normalization")
     std: Optional[List[float]] = Field(default=[0.229, 0.224, 0.225], description="Standard deviation for image normalization")
@@ -50,9 +52,24 @@ class ModelConfig(BaseModel):
 
 class TrainConfig(BaseModel):
     num_epochs: int = Field(100, description="Total number of training epochs", gt=0)
-    learning_rate: float = Field(1e-3, description="Learning rate for optimizer", gt=0)
-    weight_decay: float = Field(1e-4, description="Weight decay for optimizer", ge=0)
-    loss_function: str = Field(..., description="Loss function to use (e.g., TGCE_SSPS, Majority Voting, STAPLE)")
+    lr: float = Field(1e-3, description="Learning rate for optimizer", gt=0)
+    threshold: float = Field(default=0.5, description="Threshold for binarization", ge=0, le=1)
+    probalistic_thresholds: List[float] = Field(
+        default=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], 
+        description="Thresholds for probabalistic metrics"
+    )
+    num_classes: int = Field(default=1, description="Number of classes", gt=0)
+    num_annotators: int = Field(default=1, description="Number of annotators", gt=0)
+    ignored_value: int = Field(default=255, description="Pixel value to ignore")
+    num_classes: int = Field(default=1, description="Number of classes", gt=0)
+    num_annotators: int = Field(default=1, description="Number of annotators", gt=0)
+    smooth: float = Field(default=1e-8, description="Smooth value for metric calculations", ge=0)
+    epochs_phases: Optional[List[int]] = Field(
+        default=[0, 5, 10, 15],
+        description="Epochs at which to switch training phases"
+    )
+    gamma: float = Field(default=0.94, gt=0.0, le=1.0)
+    
 
 class ExperimentMetadata(BaseModel):
     experiment_name: str = Field(..., description="Name of the experiment")
