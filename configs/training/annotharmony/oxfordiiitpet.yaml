@@ -1,0 +1,59 @@
+data:
+  data_dir: "/kaggle/input/datasets/lucasiturriago/oxfordiiitpet-multi-annotators"
+  partitions: ['Train', 'Valid', 'Test']
+  images_folder: 'patches'
+  masks_folder: 'masks'
+  ground_truth_folder: 'ground_truth'
+
+  load_annotators: True
+  load_ground_truth: False
+  
+  num_classes: 2
+  num_annotators: 3
+
+  image_size: [224,224]
+  ignored_value: 0.6
+  normalize: True
+  transforms: True
+  
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  
+  batch_size: 16
+  num_workers: 4
+  pin_memory: True
+  prefetch_factor: 2
+
+model:
+  model_name: "Annot-Harmony"
+  num_annotators: 3
+  in_channels: 3
+  num_classes: 2
+  image_size: 224
+  pretrained: True
+  decoder_channels: [256, 128, 64, 64]
+  use_residual: True
+  seg_head_activation: 'softmax'
+  annotator_activation: 'softmax'
+
+training:
+  epochs: 10
+  lr: 1e-3
+  threshold: 0.5
+  probabilistic_thresholds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  num_classes: 2
+  num_annotators: 3
+  ignored_value: 0.6
+  smooth: 1e-8
+  epochs_phases: [0, 5, 10, 15]
+  gamma: 0.94
+  tgce_q: 0.6704
+  tgce_lambda: 1.0
+  seed: 42
+
+metadata:
+  name: "annot_harmony_oxford_iiit_pet"
+  version: 1
+  output_dir: "outputs/annot_harmony/experiment_1"
+  save_results: True
+

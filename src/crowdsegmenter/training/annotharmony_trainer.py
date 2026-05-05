@@ -14,14 +14,14 @@ from crowdsegmenter.utils.train_phases import get_training_phase
 
 
 class AnnotHarmonyTrainer:
-    """Trainer for AnnotHarmony / CrowdSeg multi-annotator segmentation models.
+    """Trainer for AnnotHarmony multi-annotator segmentation model.
 
     Handles multi-phase curriculum training (gradual unfreezing), mixed-precision
     forward/backward passes, validation with probabilistic metrics, and best-checkpoint
     recovery.
 
     Attributes:
-        model (nn.Module): The segmentation model (AnnotHarmony or CrowdSeg).
+        model (nn.Module): The segmentation model AnnotHarmony.
         train_loader (DataLoader): DataLoader for training data.
         val_loader (DataLoader): DataLoader for validation data.
         criterion (nn.Module): Loss function (e.g. TGCE_SSPS).

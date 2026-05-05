@@ -171,6 +171,37 @@ class MetricTracker:
             "avg": {k: v / num_thresholds for k, v in avg_sums.items()},
             "per_class": {k: v / num_thresholds for k, v in per_class_sums.items()},
         }
+    
+    def evaluation(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+    ) -> Dict[str, Any]:
+
+        model.eval()
+        all_seg_preds = []
+        all_ref_masks = []
+
+        with torch.no_grad():
+            for batch in loader:
+                images = batch[0].to(device)
+                masks = batch[1].to(device)
+                multihot = batch[2].to(device)
+
+                seg_pred, _  = model(images, multihot)
+
+                ref_mask = self.compute_probability_mask(masks)
+
+                all_seg_preds.append(seg_pred.cpu())
+                all_ref_masks.append(ref_mask.cpu())
+
+        seg_preds_cat = torch.cat(all_seg_preds, dim=0)
+        ref_masks_cat = torch.cat(all_ref_masks, dim=0)
+
+        final_metrics = self.calculate_metrics(seg_preds_cat, ref_masks_cat)
+
+        return final_metrics
 
     @staticmethod
     def print_summary(

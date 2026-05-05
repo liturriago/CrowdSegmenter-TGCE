@@ -1,68 +1,82 @@
+"""
+Command-line script for training and evaluating AnnotHarmony on multi-annotator
+segmentation data.
+
+This script executes a single training run: data loading, model construction,
+curriculum training via AnnotHarmonyTrainer, final evaluation with probabilistic
+metrics, and weight serialization.
+"""
 import argparse
-import logging
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from pathlib import Path
 
 from crowdsegmenter.config import ExperimentConfig
-from crowdsegmenter.engine import Trainer
+from crowdsegmenter.data.loader import AnnotHarmonyDataLoader
+from crowdsegmenter.models.annotharmony import AnnotHarmony
+from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
+from crowdsegmenter.training.annotharmony_trainer import AnnotHarmonyTrainer
+from crowdsegmenter.utils.metrics import MetricTracker
+from crowdsegmenter.utils.reproducibility import set_seed
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def run_annot_harmony_experiment(config_path: str) -> None:
+    """
+    """
+    # 1. Load Configuration & Setup
+    cfg = ExperimentConfig.from_yaml(config_path)
+    device = torch.device(cfg.training.device if torch.cuda.is_available() else "cpu")
+    
+    if cfg.training.seed is not None:
+        set_seed(cfg.training.seed)
+        
+    output_path = Path(cfg.experiment.output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # 2. Data Setup
+    data_manager = AnnotHarmonyDataLoader(cfg.data)
+    train_loader, val_loader, test_loader = data_manager.get_split_loaders()
 
-def main():
-    parser = argparse.ArgumentParser(description="CrowdSegmenter-TGCE Training Entry Point")
-    parser.add_argument(
-        "--config", 
-        type=str, 
-        required=True, 
-        help="Path to the YAML experiment configuration file"
-    )
-    args = parser.parse_args()
+    # 3. Model, Loss, and Optimizer Initialization
+    model = AnnotHarmony(cfg.model).to(device)
 
-    # 1. Load Configuration
-    config = ExperimentConfig.from_yaml(args.config)
-    logger.info(f"Loaded configuration for experiment: {config.metadata.experiment_name}")
+    criterion = TGCE_SSPS(
+        annotators=cfg.model.num_annotators,
+        classes=cfg.model.num_classes,
+        ignore_value=cfg.data.ignored_value,
+        q=cfg.training.tgce_q,
+        lambda_factor=cfg.training.tgce_lambda,
+        smooth=cfg.training.smooth,
+    ).to(device)
 
-    # 2. Setup Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-
-    # 3. Initialize Model (Mock example)
-    logger.info(f"Initializing architecture: {config.model.architecture}")
-    # TODO: Replace with actual model factory based on config.model
-    model = nn.Conv2d(config.model.in_channels, config.model.num_classes, kernel_size=3, padding=1)
-
-    # 4. Initialize DataLoaders (Mock example)
-    logger.info(f"Setting up dataloaders from: {config.data.dataset_path}")
-    # TODO: Replace with actual dataloaders based on config.data
-    mock_data = torch.randn(100, config.model.in_channels, config.data.img_size, config.data.img_size)
-    mock_targets = torch.randn(100, config.model.num_classes, config.data.img_size, config.data.img_size)
-    dataset = TensorDataset(mock_data, mock_targets)
-    train_loader = DataLoader(dataset, batch_size=config.data.batch_size, num_workers=config.data.num_workers)
-    val_loader = DataLoader(dataset, batch_size=config.data.batch_size, num_workers=config.data.num_workers)
-
-    # 5. Initialize Loss and Optimizer
-    # TODO: Replace with actual loss function initialization based on config.training.loss_function
-    criterion = nn.MSELoss() 
-    optimizer = torch.optim.Adam(
-        model.parameters(), 
-        lr=config.training.learning_rate, 
-        weight_decay=config.training.weight_decay
-    )
-
-    # 6. Initialize and Run Trainer
-    trainer = Trainer(
-        config=config,
+    # 4. Train model
+    trainer = AnnotHarmonyTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         criterion=criterion,
-        optimizer=optimizer,
-        device=device
+        device=device,
+        config=cfg.training,
     )
     
-    trainer.fit()
+    print(f"\n Starting AnnotHarmony training on {device}...")
+    trained_model, history = trainer.fit()
+
+    # 5. Final Evaluation on Source Test Set
+    print("\n Generating Final Statistical Reports on Test Set...")
+
+    class_names = [f"Class {i}" for i in range(cfg.model.num_classes)]
+    
+    metric_tracker = MetricTracker(cfg.training)
+    metrics = metric_tracker.evaluation(trained_model, test_loader,device)
+    metric_tracker.print_full_report("AnnotHarmony Test", metrics, class_names)
+
+    # 6. Save the final trained weights
+    save_file = Path(output_path) / "model_final.pth"
+    torch.save(trained_model.state_dict(), save_file)
+    print(f"\n Experiment completed. Results saved in: {output_path}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="AnnotHarmony Training Script")
+    parser.add_argument("--config", type=str, default="configs/base_experiment.yaml", help="Path to YAML config")
+    args = parser.parse_args()
+    
+    run_annot_harmony_experiment(args.config)
