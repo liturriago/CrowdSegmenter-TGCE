@@ -11,7 +11,7 @@ class DataConfig(BaseModel):
     ground_truth_folder: str = Field(default="ground_truth", description="Folder containing ground truth masks")
     
     load_annotators: bool = Field(default=True, description="Whether to load annotator masks")
-    load_ground_truth: bool = Field(default=True, description="Whether to load ground truth masks")
+    load_ground_truth: bool = Field(default=False, description="Whether to load ground truth masks")
     
     num_classes: int = Field(default=1, description="Number of classes", gt=0)
     num_annotators: int = Field(default=1, description="Number of annotators", gt=0)
