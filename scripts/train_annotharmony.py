@@ -11,7 +11,7 @@ import torch
 from pathlib import Path
 
 from crowdsegmenter.config import ExperimentConfig
-from crowdsegmenter.data import AnnotHarmonyDataLoader
+from crowdsegmenter.data.annotharmony_data import AnnotHarmonyDataLoader
 from crowdsegmenter.models.annot_harmony import AnnotHarmony
 from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
 from crowdsegmenter.training.annotharmony_trainer import AnnotHarmonyTrainer
