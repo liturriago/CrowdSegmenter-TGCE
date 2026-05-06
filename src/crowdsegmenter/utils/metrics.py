@@ -1,6 +1,7 @@
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 from typing import List, Dict, Tuple, Any
-
 
 class MetricTracker:
     """Utility class for computing segmentation metrics with multi-annotator support.
@@ -17,10 +18,7 @@ class MetricTracker:
         self.probabilistic_thresholds = config.probabilistic_thresholds
         self.smooth = config.smooth
 
-    @staticmethod
-    def compute_probability_mask(
-        masks: torch.Tensor
-    ) -> torch.Tensor:
+    def compute_probability_mask(self, masks: torch.Tensor) -> torch.Tensor:
         """Computes a probability mask by averaging valid annotations per class.
 
         Ignores entries equal to ``ignored_value`` when computing the mean,
@@ -57,8 +55,8 @@ class MetricTracker:
 
         return probability_mask
 
-    @staticmethod
     def calculate_metrics(
+        self,
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
     ) -> Dict[str, Any]:
@@ -97,10 +95,10 @@ class MetricTracker:
         tn = ((1 - y_true_bin) * (1 - y_pred_bin) * mask).sum(dim=(2, 3))
 
         # Per-sample, per-class metrics
-        dice        = (2 * tp + smooth) / (2 * tp + fp + fn + smooth)
-        jaccard     = (tp + smooth) / (tp + fp + fn + smooth)
-        sensitivity = (tp + smooth) / (tp + fn + smooth)
-        specificity = (tn + smooth) / (tn + fp + smooth)
+        dice        = (2 * tp + self.smooth) / (2 * tp + fp + fn + self.smooth)
+        jaccard     = (tp + self.smooth) / (tp + fp + fn + self.smooth)
+        sensitivity = (tp + self.smooth) / (tp + fn + self.smooth)
+        specificity = (tn + self.smooth) / (tn + fp + self.smooth)
 
         # Replace any NaNs with 0
         _nan_to_zero = lambda t: torch.where(
