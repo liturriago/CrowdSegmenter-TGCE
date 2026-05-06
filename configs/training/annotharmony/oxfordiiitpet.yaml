@@ -39,6 +39,7 @@ model:
 training:
   epochs: 10
   lr: 1e-3
+  transfer_lr: 1e-4
   threshold: 0.5
   probabilistic_thresholds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
   num_classes: 2
@@ -50,8 +51,9 @@ training:
   tgce_q: 0.6704
   tgce_lambda: 1.0
   seed: 42
+  device: "cuda" 
 
-metadata:
+experiment:
   name: "annot_harmony_oxford_iiit_pet"
   version: 1
   output_dir: "outputs/annot_harmony/experiment_1"
