@@ -59,6 +59,7 @@ class MetricTracker:
         self,
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
+        threshold: float = None,
     ) -> Dict[str, Any]:
         """Computes segmentation metrics at a single decision threshold.
 
@@ -85,8 +86,8 @@ class MetricTracker:
         mask = (y_true != ignore_tensor).float()
 
         # Binarise predictions and ground truth
-        y_true_bin = (y_true > self.threshold).float()
-        y_pred_bin = (y_pred > self.threshold).float()
+        y_true_bin = (y_true > threshold).float()
+        y_pred_bin = (y_pred > threshold).float()
 
         # Confusion-matrix components — summed over spatial dims, shape [B, C]
         tp = (y_true_bin * y_pred_bin * mask).sum(dim=(2, 3))
@@ -158,9 +159,7 @@ class MetricTracker:
         }
 
         for threshold in self.probabilistic_thresholds:
-            metrics = self.calculate_metrics(
-                y_pred, y_true, threshold, self.ignored_value, self.smooth
-            )
+            metrics = self.calculate_metrics(y_pred, y_true, threshold)
             for key in avg_sums:
                 avg_sums[key]        += metrics["avg"][key]
                 per_class_sums[key]  += metrics["per_class"][key]
@@ -197,7 +196,7 @@ class MetricTracker:
         seg_preds_cat = torch.cat(all_seg_preds, dim=0)
         ref_masks_cat = torch.cat(all_ref_masks, dim=0)
 
-        final_metrics = self.calculate_metrics(seg_preds_cat, ref_masks_cat)
+        final_metrics = self.calculate_metrics(seg_preds_cat, ref_masks_cat, self.threshold)
 
         return final_metrics
 

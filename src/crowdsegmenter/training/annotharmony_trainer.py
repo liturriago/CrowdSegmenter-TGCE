@@ -208,7 +208,7 @@ class AnnotHarmonyTrainer:
 
             # Compute probability mask then Dice for this batch
             prob_mask = self.tracker.compute_probability_mask(masks)
-            metrics = self.tracker.calculate_metrics(y_pred=seg_pred.detach(),y_true=prob_mask)
+            metrics = self.tracker.calculate_metrics(y_pred=seg_pred.detach(),y_true=prob_mask,threshold=self.config.threshold)
             dice_sum += metrics["avg"]["dice"]
             num_batches += 1
 
