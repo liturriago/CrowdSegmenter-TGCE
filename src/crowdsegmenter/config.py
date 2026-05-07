@@ -105,8 +105,14 @@ class TrainConfig(BaseModel):
         gamma (float): Decay rate for learning rate.
         tgce_q (float): Truncation parameter for TGCE loss.
         tgce_lambda (float): Scaling factor for reliability term.
+        alpha (float): Scaling factor for the trace regularization.
+        min_trace (bool): Whether to add (True) or subtract (False) the trace regularization
+
         seed (int): Random seed for reproducibility.
     """
+    model_name: Literal["MV", "STAPLE", "Annot-Harmony", "CrowdSeg"] | None = Field(
+        default=None, description="Model architecture"
+    )
     epochs: int = Field(100, description="Total number of training epochs", gt=0)
     lr: float = Field(1e-3, description="Learning rate for optimizer", gt=0)
     transfer_lr: float = Field(default=1e-4, description="Learning rate for transfer learning", gt=0)
