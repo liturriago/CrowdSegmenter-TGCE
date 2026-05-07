@@ -24,7 +24,7 @@ class NoisyLabelLoss(nn.Module):
         smooth: float = 1e-8,
     ) -> None:
         super().__init__()
-        self.ignore_value = ignore_value
+        self.ignored_value = ignored_value
         self.min_trace = min_trace
         self.alpha = alpha
         self.smooth = smooth
@@ -52,7 +52,7 @@ class NoisyLabelLoss(nn.Module):
         b, c, h, w = pred.size()
 
         # 1. Build valid-pixel mask — works correctly with float sentinel
-        valid_mask = (labels != self.ignore_value).all(dim=1)  # [B, H, W]
+        valid_mask = (labels != self.ignored_value).all(dim=1)  # [B, H, W]
 
         # 2. One-hot → integer indices for NLLLoss
         labels_int = labels.argmax(dim=1).long()               # [B, H, W]
