@@ -37,7 +37,10 @@ class TGCE_SSPS(nn.Module):
         self.smooth = smooth
         self.lambda_factor = lambda_factor
 
-    def forward(self, seg_pred: Tensor, ann_pred: Tensor, annotations: Tensor) -> Tensor:
+    def forward(self, seg_pred: Tensor,
+                ann_pred: Tensor,
+                annotations: Tensor,
+                anns_ids: Optional[Tensor] = None) -> Tensor:
         """
         Forward pass to compute TGCE-SS loss.
 
