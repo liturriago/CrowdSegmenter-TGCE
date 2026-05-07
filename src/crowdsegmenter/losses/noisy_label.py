@@ -89,4 +89,4 @@ class NoisyLabelLoss(nn.Module):
         )
 
         loss = loss_ce + regularisation if self.min_trace else loss_ce - regularisation
-        return loss, loss_ce, regularisation
+        return loss
