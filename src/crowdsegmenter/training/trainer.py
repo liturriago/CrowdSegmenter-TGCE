@@ -14,25 +14,35 @@ from crowdsegmenter.utils.train_phases import get_training_phase
 
 
 class Trainer:
-    """Trainer for multi-annotator segmentation model.
+    """Trainer for multi-annotator segmentation models (AnnotHarmony and CrowdSeg).
 
-    Handles multi-phase curriculum training (gradual unfreezing), mixed-precision
-    forward/backward passes, validation with probabilistic metrics, and best-checkpoint
-    recovery.
+    Implements a unified training and evaluation pipeline for both architectures.
+    Both models share the same data contract — batches always carry the full
+    annotator stack ``[B, A*C, H, W]`` — so evaluation is always performed
+    against a probabilistic consensus mask, making results directly comparable
+    without ground truth.
+
+    Training uses a curriculum strategy (gradual layer unfreezing) driven by
+    ``config.epochs_phases``. Mixed-precision forward/backward passes are
+    applied throughout via AMP.
 
     Attributes:
-        model (nn.Module): The segmentation model.
+        model (nn.Module): The segmentation model (AnnotHarmony or CrowdSeg).
         train_loader (DataLoader): DataLoader for training data.
         val_loader (DataLoader): DataLoader for validation data.
-        criterion (nn.Module): Loss function (e.g. TGCE_SSPS).
+        criterion (nn.Module): Loss function (TGCE_SSPS or NoisyLabelLoss).
         device (torch.device): Device to run training on (cpu / cuda).
-        config (Any): Configuration object with training hyperparameters.
-        scaler (GradScaler): AMP gradient scaler for mixed-precision training.
-        best_val_dice (float): Highest validation Dice score achieved so far.
-        best_model_weights (Optional[Dict[str, torch.Tensor]]): State dict of the best model.
-        history (Dict[str, List[float]]): Per-epoch record of losses and Dice scores.
-        optimizer (optim.Optimizer): Optimizer, initialised at the first training phase.
-        scheduler (Optional[LRScheduler]): LR scheduler, attached in later phases.
+        config (Any): Training configuration. Must expose ``epochs``,
+            ``threshold``, ``ignored_value``, ``smooth``,
+            ``probabilistic_thresholds``, and optionally ``epochs_phases``.
+        scaler (GradScaler): AMP gradient scaler.
+        tracker (MetricTracker): Metric computation and reporting utility.
+        best_val_dice (float): Highest validation Dice achieved so far.
+        best_model_weights (Optional[Dict[str, torch.Tensor]]): State dict
+            of the best checkpoint.
+        history (Dict[str, List[float]]): Per-epoch training history.
+        optimizer (Optional[optim.Optimizer]): Set by ``get_training_phase``.
+        scheduler (Optional[LRScheduler]): Set by ``get_training_phase``.
     """
 
     def __init__(
@@ -48,21 +58,24 @@ class Trainer:
 
         Args:
             model (nn.Module): The model to train.
-            train_loader (DataLoader): Source of training samples.
-            val_loader (DataLoader): Source of validation samples.
-            criterion (nn.Module): Loss criterion.
+            train_loader (DataLoader): Source of training batches
+                ``(images, masks, anns_ids)`` where ``masks`` has shape
+                ``[B, num_annotators * num_classes, H, W]``.
+            val_loader (DataLoader): Source of validation batches,
+                same format as ``train_loader``.
+            criterion (nn.Module): Loss criterion. Must accept
+                ``(seg_pred, ann_pred, masks, anns_ids)``.
             device (torch.device): Device to run training on.
-            config (Any): Training configuration object. Must expose ``epochs``,
-                ``threshold``, ``ignored_value``, ``smooth``,
-                ``probabilistic_thresholds``, and optionally ``epochs_phases``.
+            config (Any): Training configuration object.
         """
-        self.model = model.to(device)
+        self.model     = model.to(device)
         self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.criterion = criterion
-        self.device = device
-        self.config = config
-        self.scaler = GradScaler()
+        self.val_loader   = val_loader
+        self.criterion    = criterion
+        self.device       = device
+        self.config       = config
+        self.scaler       = GradScaler()
+        self.tracker      = MetricTracker(config)
 
         # State tracking
         self.best_val_dice: float = 0.0
@@ -74,38 +87,35 @@ class Trainer:
         self.history: Dict[str, List[float]] = {
             "train_loss": [],
             "train_dice": [],
-            "val_dice": [],
+            "val_dice":   [],
         }
 
-        # Optimizer / scheduler are set by get_training_phase inside fit()
-        self.optimizer: Optional[optim.Optimizer] = None
-        self.scheduler: Optional[optim.lr_scheduler.LRScheduler] = None
-        
-        # Metric tracker
-        self.tracker = MetricTracker(config)
+        # Initialised inside fit() via get_training_phase
+        self.optimizer: Optional[optim.Optimizer]                  = None
+        self.scheduler: Optional[optim.lr_scheduler.LRScheduler]   = None
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
 
     def fit(self) -> Tuple[nn.Module, Dict[str, List[float]]]:
-        """Executes the full multi-phase training and validation process.
+        """Executes the full curriculum training and validation loop.
 
-        Phase boundaries are read from ``config.epochs_phases`` (a list of four
-        epoch indices).  If that attribute is absent or malformed the trainer
-        falls back to ``[0, 5, 10, 15]``.  Passing ``epochs_phases = []``
-        (empty list) disables curriculum entirely — the whole model is trained
-        end-to-end from epoch 0 with a scheduler.
+        Phase boundaries are read from ``config.epochs_phases``. A valid
+        value is a list of exactly four integers. Passing an empty list
+        disables the curriculum and trains the full model end-to-end from
+        epoch 0. Any other value triggers a warning and falls back to
+        ``[0, 5, 10, 15]``.
 
         Returns:
             Tuple[nn.Module, Dict[str, List[float]]]:
                 The model restored to its best validation weights and the
                 full training history.
         """
-        epochs: int = self.config.epochs
+        epochs        = self.config.epochs
         epochs_phases = self._resolve_phases()
 
-        # If no curriculum is requested, initialise once in phase-free mode
+        # Phase-free mode: initialise once before the loop
         if not epochs_phases:
             self.optimizer, self.scheduler = get_training_phase(
                 self.model, self.config, phase=None
@@ -115,13 +125,14 @@ class Trainer:
 
         for epoch in range(epochs):
 
-            # Curriculum: switch phase when the epoch boundary is reached
+            # Switch training phase at the configured epoch boundaries
             if epochs_phases and epoch in epochs_phases:
                 phase_idx = epochs_phases.index(epoch) + 1
                 self.optimizer, self.scheduler = get_training_phase(
                     self.model, self.config, phase=phase_idx
                 )
-                if self.config.model_name == 'CrowdSeg':
+
+                if self.config.model_name == "CrowdSeg":
                     self.criterion.min_trace = self.config.min_trace
 
             print(f"\nEpoch {epoch + 1}/{epochs}")
@@ -146,17 +157,16 @@ class Trainer:
 
             # 4. Checkpoint saving
             if val_dice > self.best_val_dice:
-                self.best_val_dice = val_dice
+                self.best_val_dice      = val_dice
                 self.best_model_weights = copy.deepcopy(self.model.state_dict())
                 print(f"New best model! (Val Dice: {self.best_val_dice:.4f})")
 
         total_time = time.time() - total_train_start
         print(f"\n{' TRAINING COMPLETE ':=^50}")
-        print(f"Total Duration: {format_time(total_time)}")
-        print(f"Best Dice: {self.best_val_dice:.4f}")
+        print(f"Total Duration : {format_time(total_time)}")
+        print(f"Best Val Dice  : {self.best_val_dice:.4f}")
         print("=" * 50)
 
-        # Restore best weights before returning
         if self.best_model_weights is not None:
             self.model.load_state_dict(self.best_model_weights)
 
@@ -169,97 +179,114 @@ class Trainer:
     def _train_epoch(self) -> Tuple[float, float, float]:
         """Runs a single training epoch with mixed-precision forward/backward.
 
-        Each batch is expected to yield ``(image, masks, one/multi hot-vector, gt)`` from
-        the dataset.  The model is called with both the image
-        and the annotator multi-hot vector; the criterion receives the
-        tuple output ``(seg_pred, ann_pred)`` together with the annotator masks.
+        Batch layout expected from the DataLoader:
+            - ``batch[0]`` — images       ``[B, C_in, H, W]``
+            - ``batch[1]`` — masks        ``[B, A*C,  H, W]``  (all annotators)
+            - ``batch[2]`` — anns_ids     ``[B, A]``           (one-hot or multi-hot)
+
+        The full annotator stack is passed to the criterion. Each loss
+        internally selects the signal it needs:
+
+        - ``TGCE_SSPS``    — uses all annotators jointly.
+        - ``NoisyLabelLoss`` — selects a single annotator via ``anns_ids``.
+
+        Training Dice is computed against the probabilistic consensus mask
+        at the fixed ``config.threshold``, keeping the training metric
+        consistent with the validation protocol.
 
         Returns:
             Tuple[float, float, float]:
-                Average batch loss, mean Dice score over the epoch, and total
-                epoch duration in seconds.
+                Average batch loss, mean Dice over the epoch, and epoch
+                duration in seconds.
         """
         self.model.train()
         running_loss: float = 0.0
-
-        # Accumulators for Dice across the epoch
-        dice_sum: float = 0.0
-        num_batches: int = 0
+        dice_sum:     float = 0.0
+        num_batches:  int   = 0
 
         epoch_start = time.time()
         pbar = tqdm(self.train_loader, desc="Training", leave=False)
 
         for batch in pbar:
-            images: torch.Tensor = batch[0].to(self.device)
-            masks: torch.Tensor = batch[1].to(self.device)
-            anns_ids: torch.Tensor = batch[2].to(self.device)
+            images:   torch.Tensor = batch[0].to(self.device)  # [B, C_in, H, W]
+            masks:    torch.Tensor = batch[1].to(self.device)  # [B, A*C,  H, W]
+            anns_ids: torch.Tensor = batch[2].to(self.device)  # [B, A]
 
             self.optimizer.zero_grad()
 
             with autocast(device_type=self.device.type):
-                # Forward: returns (seg_output, annotator_output)
                 seg_pred, ann_pred = self.model(images, anns_ids)
-                loss = self.criterion(seg_pred, ann_pred, masks)
+                # Both losses share the same positional signature:
+                # criterion(seg_pred, ann_pred, masks, anns_ids)
+                loss = self.criterion(seg_pred, ann_pred, masks, anns_ids)
 
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            batch_size: int = images.size(0)
-            running_loss += loss.item() * batch_size
+            running_loss += loss.item() * images.size(0)
 
-            # Compute probability mask then Dice for this batch
+            # Training Dice: fixed threshold against probabilistic consensus
             prob_mask = self.tracker.compute_probability_mask(masks)
-            metrics = self.tracker.calculate_metrics(y_pred=seg_pred.detach(),y_true=prob_mask,threshold=self.config.threshold)
-            dice_sum += metrics["avg"]["dice"]
+            metrics   = self.tracker.calculate_metrics(
+                y_pred=seg_pred.detach(),
+                y_true=prob_mask,
+                threshold=self.config.threshold,
+            )
+            dice_sum    += metrics["avg"]["dice"]
             num_batches += 1
 
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         epoch_time = time.time() - epoch_start
-        epoch_loss: float = running_loss / len(self.train_loader.dataset)
-        epoch_dice: float = dice_sum / max(num_batches, 1)
+        epoch_loss = running_loss / len(self.train_loader.dataset)
+        epoch_dice = dice_sum / max(num_batches, 1)
 
         return epoch_loss, epoch_dice, epoch_time
 
     @torch.no_grad()
     def evaluate(self, loader: DataLoader, prefix: str = "Val") -> float:
-        """Evaluates the model using probabilistic metrics averaged over all thresholds.
+        """Evaluates the model using probabilistic metrics over all thresholds.
+
+        Collects predictions and consensus masks across the full loader,
+        then calls :meth:`MetricTracker.compute_probabilistic_metrics` once
+        on the concatenated tensors. This is both more accurate (avoids
+        batch-size bias in running averages) and consistent with the paper's
+        evaluation protocol.
 
         Args:
-            loader (DataLoader): Dataset split to evaluate (validation or test).
-            prefix (str): Label for the printed summary (e.g. ``"Val"``, ``"Test"``).
+            loader (DataLoader): Dataset split to evaluate.
+            prefix (str): Label for the printed summary
+                (e.g. ``"Val"``, ``"Test"``).
 
         Returns:
-            float: Mean Dice score averaged over the full loader and all
+            float: Mean Dice averaged over the full loader and all
                 probabilistic thresholds.
         """
         self.model.eval()
 
-        all_seg_preds: List[torch.Tensor] = []
+        all_seg_preds:  List[torch.Tensor] = []
         all_prob_masks: List[torch.Tensor] = []
 
         pbar = tqdm(loader, desc=f"Evaluating ({prefix})", leave=False)
 
         for batch in pbar:
-            images: torch.Tensor = batch[0].to(self.device)
-            masks: torch.Tensor = batch[1].to(self.device)
+            images:   torch.Tensor = batch[0].to(self.device)
+            masks:    torch.Tensor = batch[1].to(self.device)  # [B, A*C, H, W]
             anns_ids: torch.Tensor = batch[2].to(self.device)
 
-            seg_pred, _ = self.model(images, anns_ids)
+            output   = self.model(images, anns_ids)
+            seg_pred = output[0] if isinstance(output, tuple) else output
 
             prob_mask = self.tracker.compute_probability_mask(masks)
 
             all_seg_preds.append(seg_pred.cpu())
             all_prob_masks.append(prob_mask.cpu())
 
-        # Concatenate all batches and compute probabilistic metrics in one pass
-        seg_preds_cat = torch.cat(all_seg_preds, dim=0)
+        seg_preds_cat  = torch.cat(all_seg_preds,  dim=0)
         prob_masks_cat = torch.cat(all_prob_masks, dim=0)
 
-        # Use instance method (needs self.config thresholds)
-        metrics = self.tracker.compute_probabilistic_metrics(seg_preds_cat, prob_masks_cat)
-
+        metrics     = self.tracker.compute_probabilistic_metrics(seg_preds_cat, prob_masks_cat)
         class_names = [f"Class {i}" for i in range(self.config.num_classes)]
         self.tracker.print_summary(prefix, metrics, class_names)
 
@@ -272,16 +299,12 @@ class Trainer:
     def _resolve_phases(self) -> List[int]:
         """Validates and returns the epoch phase boundaries from config.
 
-        If ``config.epochs_phases`` is a valid list of four integers it is
-        returned as-is.  An empty list disables curriculum.  Any other
-        value triggers a warning and falls back to ``[0, 5, 10, 15]``.
-
         Returns:
-            List[int]: Resolved epoch phase boundaries.
+            List[int]: Resolved phase boundaries, or ``[]`` to disable
+                the curriculum.
         """
         phases = getattr(self.config, "epochs_phases", None)
 
-        # Explicit opt-out: empty list → phase-free training
         if isinstance(phases, list) and len(phases) == 0:
             return []
 

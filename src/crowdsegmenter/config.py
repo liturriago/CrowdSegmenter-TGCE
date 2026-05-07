@@ -69,9 +69,6 @@ class ModelConfig(BaseModel):
         seg_head_activation (Literal["sigmoid", "softmax", "tanh", "relu"] | None): Segmentation head activation.
         annotator_activation (Literal["sigmoid", "softmax", "tanh", "relu"] | None): Annotator head activation.
     """
-    model_name: Literal["MV", "STAPLE", "Annot-Harmony", "CrowdSeg"] | None = Field(
-        default=None, description="Model architecture to use"
-    )
     num_annotators: int = Field(default=1, description="Number of annotators", gt=0)
     in_channels: int = Field(default=3, description="Number of input channels", gt=0)
     num_classes: int = Field(default=1, description="Number of classes", gt=0)

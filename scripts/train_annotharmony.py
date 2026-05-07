@@ -11,7 +11,7 @@ import torch
 from pathlib import Path
 
 from crowdsegmenter.config import ExperimentConfig
-from crowdsegmenter.data.annotharmony_data import AnnotHarmonyDataLoader
+from crowdsegmenter.data.loader import CrowdSegmenterDataLoader
 from crowdsegmenter.models.annot_harmony import AnnotHarmony
 from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
 from crowdsegmenter.training.trainer import Trainer
@@ -43,7 +43,7 @@ def run_annot_harmony_experiment(config_path: str) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     
     # 2. Data Setup
-    data_manager = AnnotHarmonyDataLoader(cfg.data)
+    data_manager = CrowdSegmenterDataLoader(cfg.data, mode="Annot-Harmony")
     train_loader, val_loader, test_loader = data_manager.get_split_loaders()
 
     # 3. Model, Loss, and Optimizer Initialization
