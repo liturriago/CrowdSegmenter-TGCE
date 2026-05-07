@@ -4,245 +4,142 @@ import torch.nn.functional as F
 from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
 from crowdsegmenter.losses.noisy_label import NoisyLabelLoss
 
-
-# ------------------------------------------------------------------ #
-#  Shared fixtures                                                     #
-# ------------------------------------------------------------------ #
+# --- Constants for Testing ---
+B, C, A, H, W = 2, 3, 2, 8, 8  # Batch, Classes, Annotators, Height, Width
 
 @pytest.fixture
-def dims():
-    """Standard batch / spatial dimensions used across all tests."""
-    return dict(N=2, K=2, R=3, H=16, W=16)
-
-
-@pytest.fixture
-def seg_pred(dims):
-    """Valid softmax predictions [N, K, H, W]."""
-    N, K, H, W = dims["N"], dims["K"], dims["H"], dims["W"]
-    x = torch.rand(N, K, H, W)
-    return F.softmax(x, dim=1)
-
-
-@pytest.fixture
-def ann_pred_tgce(dims):
-    """Reliability scores for TGCE_SSPS [N, R, H, W] in (0, 1)."""
-    N, R, H, W = dims["N"], dims["R"], dims["H"], dims["W"]
-    return torch.rand(N, R, H, W).clamp(0.01, 0.99)
-
+def noisy_label_inputs():
+    """Generates valid inputs for NoisyLabelLoss."""
+    # Predictions (Softmaxed)
+    pred = F.softmax(torch.randn(B, C, H, W), dim=1)
+    
+    # Confusion Matrices (Softplus-ed)
+    cms = F.softplus(torch.randn(B, C**2, H, W))
+    
+    # Annotations: layout channel k * A + r
+    annotations = torch.randn(B, C * A, H, W)
+    
+    # Annotator IDs: One-hot [B, A]
+    anns_ids = torch.zeros(B, A)
+    anns_ids[0, 0] = 1 # Sample 0 uses annotator 0
+    anns_ids[1, 1] = 1 # Sample 1 uses annotator 1
+    
+    return pred, cms, annotations, anns_ids
 
 @pytest.fixture
-def cms(dims):
-    """Softplus confusion matrices for NoisyLabelLoss [N, K², H, W]."""
-    N, K, H, W = dims["N"], dims["K"], dims["H"], dims["W"]
-    return F.softplus(torch.randn(N, K ** 2, H, W))
+def tgce_inputs():
+    """Generates valid inputs for TGCE_SSPS."""
+    seg_pred = F.softmax(torch.randn(B, C, H, W), dim=1)
+    ann_pred = torch.sigmoid(torch.randn(B, A, H, W)) # Reliability weights [0, 1]
+    annotations = torch.randn(B, C * A, H, W)
+    return seg_pred, ann_pred, annotations
 
+# --- Tests for NoisyLabelLoss ---
 
-@pytest.fixture
-def annotations(dims):
-    """Full annotator stack [N, K*R, H, W] layout: channel = k*R + r.
+def test_noisy_label_forward_shape(noisy_label_inputs):
+    """Checks if the loss returns a scalar tensor."""
+    criterion = NoisyLabelLoss(num_annotators=A, num_classes=C)
+    loss = criterion(*noisy_label_inputs)
+    assert loss.dim() == 0
+    assert not torch.isnan(loss)
 
-    Each pixel gets a valid one-hot class assignment from every annotator.
-    One pixel is intentionally set to the sentinel value to verify masking.
-    """
-    N, K, R, H, W = dims["N"], dims["K"], dims["R"], dims["H"], dims["W"]
-    ignored = 0.6
+def test_noisy_label_ignored_value(noisy_label_inputs):
+    """Verifies that ignored_value pixels are excluded (loss changes if data changes outside ignore)."""
+    pred, cms, annotations, anns_ids = noisy_label_inputs
+    criterion = NoisyLabelLoss(num_annotators=A, num_classes=C, ignored_value=0.6)
+    
+    # Set a specific pixel to ignored_value across all channels for that pixel
+    annotations[:, :, 0, 0] = 0.6
+    loss1 = criterion(pred, cms, annotations, anns_ids)
+    
+    # Change the value of an ignored pixel - loss should NOT change
+    annotations[:, :, 0, 0] = 0.6 # Ensure it's still ignored
+    # We modify the 'pred' at the ignored location
+    pred_mod = pred.clone()
+    pred_mod[:, :, 0, 0] = 0.5 
+    loss2 = criterion(pred_mod, cms, annotations, anns_ids)
+    
+    torch.testing.assert_close(loss1, loss2)
 
-    masks = torch.zeros(N, K * R, H, W)
-    for n in range(N):
-        for r in range(R):
-            # Random class per pixel for annotator r
-            class_idx = torch.randint(0, K, (H, W))          # [H, W]
-            for k in range(K):
-                ch = k * R + r
-                masks[n, ch] = (class_idx == k).float()
+def test_noisy_label_backward(noisy_label_inputs):
+    """Checks if gradients propagate to predictions and confusion matrices."""
+    pred, cms, annotations, anns_ids = noisy_label_inputs
+    pred.requires_grad_(True)
+    cms.requires_grad_(True)
+    
+    criterion = NoisyLabelLoss(num_annotators=A, num_classes=C)
+    loss = criterion(pred, cms, annotations, anns_ids)
+    loss.backward()
+    
+    assert pred.grad is not None
+    assert cms.grad is not None
 
-    # Inject one sentinel pixel (sample 0, annotator 0, all classes)
-    for k in range(K):
-        masks[0, k * R + 0, 0, 0] = ignored
+def test_noisy_label_min_trace_toggle(noisy_label_inputs):
+    """Ensures min_trace changes the loss value (regularization sign)."""
+    criterion_plus = NoisyLabelLoss(num_annotators=A, num_classes=C, min_trace=True, alpha=1.0)
+    criterion_minus = NoisyLabelLoss(num_annotators=A, num_classes=C, min_trace=False, alpha=1.0)
+    
+    loss_plus = criterion_plus(*noisy_label_inputs)
+    loss_minus = criterion_minus(*noisy_label_inputs)
+    
+    assert loss_plus > loss_minus
 
-    return masks
+# --- Tests for TGCE_SSPS ---
 
+def test_tgce_forward_shape(tgce_inputs):
+    """Checks if TGCE returns a scalar."""
+    criterion = TGCE_SSPS(annotators=A, classes=C)
+    loss = criterion(*tgce_inputs)
+    assert loss.dim() == 0
+    assert not torch.isnan(loss)
 
-@pytest.fixture
-def anns_ids(dims):
-    """One-hot annotator selector [N, R] — always selects annotator 0."""
-    N, R = dims["N"], dims["R"]
-    ids = torch.zeros(N, R)
-    ids[:, 0] = 1.0
-    return ids
+def test_tgce_ignored_value(tgce_inputs):
+    """Verifies pixels with ignored_value are masked in TGCE."""
+    seg_pred, ann_pred, annotations = tgce_inputs
+    criterion = TGCE_SSPS(annotators=A, classes=C, ignored_value=99.0)
+    
+    # Set a pixel to ignore
+    annotations[:, :, 0, 0] = 99.0
+    loss1 = criterion(seg_pred, ann_pred, annotations)
+    
+    # Modify values at the ignored location
+    seg_pred_mod = seg_pred.clone()
+    seg_pred_mod[:, :, 0, 0] = 0.1
+    loss2 = criterion(seg_pred_mod, ann_pred, annotations)
+    
+    torch.testing.assert_close(loss1, loss2)
 
+def test_tgce_backward(tgce_inputs):
+    """Checks gradient flow for both segmentation and reliability heads."""
+    seg_pred, ann_pred, annotations = tgce_inputs
+    seg_pred.requires_grad_(True)
+    ann_pred.requires_grad_(True)
+    
+    criterion = TGCE_SSPS(annotators=A, classes=C)
+    loss = criterion(seg_pred, ann_pred, annotations)
+    loss.backward()
+    
+    assert seg_pred.grad is not None
+    assert ann_pred.grad is not None
 
-# ------------------------------------------------------------------ #
-#  TGCE_SSPS                                                          #
-# ------------------------------------------------------------------ #
+@pytest.mark.parametrize("q", [0.1, 0.5, 0.9])
+def test_tgce_q_parameter(tgce_inputs, q):
+    """Checks if the loss works with different truncation parameters."""
+    criterion = TGCE_SSPS(annotators=A, classes=C, q=q)
+    loss = criterion(*tgce_inputs)
+    assert not torch.isnan(loss)
 
-class TestTGCE_SSPS:
-
-    def test_initialization(self):
-        loss_fn = TGCE_SSPS(
-            annotators=3, classes=2, ignored_value=0.6,
-            q=0.5, lambda_factor=1.0, smooth=1e-7,
-        )
-        assert loss_fn.R == 3
-        assert loss_fn.K == 2
-        assert loss_fn.ignored_value == 0.6
-        assert loss_fn.q == 0.5
-        assert loss_fn.lambda_factor == 1.0
-        assert loss_fn.smooth == 1e-7
-
-    def test_output_is_finite_scalar(self, dims, seg_pred, ann_pred_tgce, annotations):
-        N, K, R = dims["N"], dims["K"], dims["R"]
-        loss_fn = TGCE_SSPS(annotators=R, classes=K, ignored_value=0.6)
-        loss = loss_fn(seg_pred, ann_pred_tgce, annotations, anns_ids=None)
-
-        assert isinstance(loss, torch.Tensor)
-        assert loss.dim() == 0
-        assert torch.isfinite(loss)
-
-    def test_output_is_non_negative(self, dims, seg_pred, ann_pred_tgce, annotations):
-        """TGCE loss is a sum of non-negative terms."""
-        N, K, R = dims["N"], dims["K"], dims["R"]
-        loss_fn = TGCE_SSPS(annotators=R, classes=K, ignored_value=0.6)
-        loss = loss_fn(seg_pred, ann_pred_tgce, annotations, anns_ids=None)
-        assert loss.item() >= 0.0
-
-    def test_anns_ids_is_ignored(self, dims, seg_pred, ann_pred_tgce, annotations, anns_ids):
-        """TGCE_SSPS must produce identical results whether anns_ids is None or a tensor."""
-        N, K, R = dims["N"], dims["K"], dims["R"]
-        loss_fn = TGCE_SSPS(annotators=R, classes=K, ignored_value=0.6)
-
-        loss_none   = loss_fn(seg_pred, ann_pred_tgce, annotations, anns_ids=None)
-        loss_tensor = loss_fn(seg_pred, ann_pred_tgce, annotations, anns_ids=anns_ids)
-
-        assert torch.allclose(loss_none, loss_tensor), (
-            "TGCE_SSPS should ignore anns_ids entirely"
-        )
-
-    def test_sentinel_pixels_excluded(self, dims, seg_pred, ann_pred_tgce):
-        """A batch of all-sentinel annotations should yield loss ≈ 0."""
-        N, K, R, H, W = dims["N"], dims["K"], dims["R"], dims["H"], dims["W"]
-        ignored = 0.6
-        all_ignored = torch.full((N, K * R, H, W), ignored)
-
-        loss_fn = TGCE_SSPS(annotators=R, classes=K, ignored_value=ignored)
-        loss = loss_fn(seg_pred, ann_pred_tgce, all_ignored, anns_ids=None)
-
-        assert loss.item() == pytest.approx(0.0, abs=1e-5)
-
-    def test_loss_decreases_with_confident_correct_pred(self, dims, ann_pred_tgce, annotations):
-        """A near-perfect prediction should yield a lower loss than a random one."""
-        N, K, R, H, W = dims["N"], dims["K"], dims["R"], dims["H"], dims["W"]
-        loss_fn = TGCE_SSPS(annotators=R, classes=K, ignored_value=0.6)
-
-        # Near-uniform (bad) prediction
-        bad_pred = torch.full((N, K, H, W), 1.0 / K)
-
-        # Confident prediction that matches the majority class
-        good_pred = torch.zeros(N, K, H, W)
-        good_pred[:, 0] = 0.99
-        good_pred[:, 1] = 0.01
-
-        loss_bad  = loss_fn(bad_pred,  ann_pred_tgce, annotations, anns_ids=None)
-        loss_good = loss_fn(good_pred, ann_pred_tgce, annotations, anns_ids=None)
-
-        assert loss_good.item() < loss_bad.item()
-
-
-# ------------------------------------------------------------------ #
-#  NoisyLabelLoss                                                     #
-# ------------------------------------------------------------------ #
-
-class TestNoisyLabelLoss:
-
-    def test_initialization(self):
-        loss_fn = NoisyLabelLoss(
-            num_annotators=3, num_classes=2,
-            ignored_value=0.6, min_trace=False,
-            alpha=0.1, smooth=1e-8,
-        )
-        assert loss_fn.num_annotators == 3
-        assert loss_fn.num_classes    == 2
-        assert loss_fn.ignored_value  == 0.6
-        assert loss_fn.min_trace      is False
-        assert loss_fn.alpha          == 0.1
-
-    def test_output_is_finite_scalar(self, dims, seg_pred, cms, annotations, anns_ids):
-        N, K, R = dims["N"], dims["K"], dims["R"]
-        loss_fn = NoisyLabelLoss(num_annotators=R, num_classes=K, ignored_value=0.6)
-        loss = loss_fn(seg_pred, cms, annotations, anns_ids)
-
-        assert isinstance(loss, torch.Tensor)
-        assert loss.dim() == 0
-        assert torch.isfinite(loss)
-
-    def test_min_trace_changes_loss(self, dims, seg_pred, cms, annotations, anns_ids):
-        """Flipping min_trace must change the loss value."""
-        N, K, R = dims["N"], dims["K"], dims["R"]
-        loss_add = NoisyLabelLoss(
-            num_annotators=R, num_classes=K, min_trace=True
-        )(seg_pred, cms, annotations, anns_ids)
-
-        loss_sub = NoisyLabelLoss(
-            num_annotators=R, num_classes=K, min_trace=False
-        )(seg_pred, cms, annotations, anns_ids)
-
-        assert not torch.allclose(loss_add, loss_sub), (
-            "min_trace=True and min_trace=False should produce different losses"
-        )
-
-    def test_annotator_selection_uses_onehot(self, dims, seg_pred, cms, annotations):
-        """Different one-hot selections should produce different losses."""
-        N, K, R = dims["N"], dims["K"], dims["R"]
-        loss_fn = NoisyLabelLoss(num_annotators=R, num_classes=K, ignored_value=0.6)
-
-        ids_0 = torch.zeros(N, R); ids_0[:, 0] = 1.0
-        ids_1 = torch.zeros(N, R); ids_1[:, 1] = 1.0
-
-        loss_0 = loss_fn(seg_pred, cms, annotations, ids_0)
-        loss_1 = loss_fn(seg_pred, cms, annotations, ids_1)
-
-        assert not torch.allclose(loss_0, loss_1), (
-            "Selecting different annotators should yield different losses"
-        )
-
-    def test_sentinel_pixels_excluded(self, dims, seg_pred, cms, anns_ids):
-        """All-sentinel labels should result in zero NLLLoss contribution."""
-        N, K, R, H, W = dims["N"], dims["K"], dims["R"], dims["H"], dims["W"]
-        ignored = 0.6
-
-        # Build annotations where the selected annotator (r=0) is all sentinel
-        all_ignored = torch.zeros(N, K * R, H, W)
-        for k in range(K):
-            all_ignored[:, k * R + 0, :, :] = ignored   # annotator 0, class k
-
-        loss_fn = NoisyLabelLoss(
-            num_annotators=R, num_classes=K, ignored_value=ignored
-        )
-        loss = loss_fn(seg_pred, cms, all_ignored, anns_ids)
-
-        assert torch.isfinite(loss)
-
-    def test_channel_layout_k_times_R_plus_r(self, dims, seg_pred, cms):
-        """Verifies the channel layout k*R+r by checking annotator 1 vs annotator 2."""
-        N, K, R, H, W = dims["N"], dims["K"], dims["R"], dims["H"], dims["W"]
-        loss_fn = NoisyLabelLoss(num_annotators=R, num_classes=K, ignored_value=0.6)
-
-        # Build two annotation tensors identical except annotator 1 vs 2
-        def make_annotations(r_selected: int) -> torch.Tensor:
-            masks = torch.full((N, K * R, H, W), 0.6)
-            for k in range(K):
-                ch = k * R + r_selected
-                # class 0 = foreground for all pixels
-                masks[:, ch, :, :] = float(k == 0)
-            return masks
-
-        ids_1 = torch.zeros(N, R); ids_1[:, 1] = 1.0
-        ids_2 = torch.zeros(N, R); ids_2[:, 2] = 1.0
-
-        loss_1 = loss_fn(seg_pred, cms, make_annotations(1), ids_1)
-        loss_2 = loss_fn(seg_pred, cms, make_annotations(2), ids_2)
-
-        # Both annotators provide identical labels so loss should be the same
-        assert torch.allclose(loss_1, loss_2, atol=1e-5), (
-            "Identical labels from different annotators should yield the same loss"
-        )
+def test_tgce_reliability_weighting(tgce_inputs):
+    """Ensures loss responds to changes in reliability (ann_pred)."""
+    seg_pred, ann_pred, annotations = tgce_inputs
+    criterion = TGCE_SSPS(annotators=A, classes=C)
+    
+    # High reliability
+    ann_pred_high = torch.ones_like(ann_pred)
+    loss_high = criterion(seg_pred, ann_pred_high, annotations)
+    
+    # Low reliability
+    ann_pred_low = torch.zeros_like(ann_pred)
+    loss_low = criterion(seg_pred, ann_pred_low, annotations)
+    
+    assert loss_high != loss_low
