@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
-from crowdsegmenter.losses.noisy_label_loss import NoisyLabelLoss
+from crowdsegmenter.losses.noisy_label import NoisyLabelLoss
 
 
 # ------------------------------------------------------------------ #
