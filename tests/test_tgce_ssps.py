@@ -3,10 +3,10 @@ import torch
 from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
 
 def test_tgce_ssps_initialization():
-    loss_fn = TGCE_SSPS(annotators=3, classes=2, ignore_value=0.6, q=0.5, lambda_factor=1.0)
+    loss_fn = TGCE_SSPS(annotators=3, classes=2, ignored_value=0.6, q=0.5, lambda_factor=1.0)
     assert loss_fn.R == 3
     assert loss_fn.K == 2
-    assert loss_fn.ignore_value == 0.6
+    assert loss_fn.ignored_value == 0.6
     assert loss_fn.q == 0.5
     assert loss_fn.lambda_factor == 1.0
 
@@ -39,7 +39,7 @@ def test_tgce_ssps_forward():
     # Reshape annotations to match expected input format
     annotations_input = annotations.reshape(N, K * R, H, W)
     
-    loss_fn = TGCE_SSPS(annotators=R, classes=K, ignore_value=0.6)
+    loss_fn = TGCE_SSPS(annotators=R, classes=K, ignored_value=0.6)
     loss = loss_fn(seg_pred, ann_pred, annotations_input)
     
     assert isinstance(loss, torch.Tensor)
