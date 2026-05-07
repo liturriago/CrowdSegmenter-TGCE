@@ -1,9 +1,9 @@
 """
-Command-line script for training and evaluating AnnotHarmony on multi-annotator
+Command-line script for training and evaluating CrowdSeg on multi-annotator
 segmentation data.
 
 This script executes a single training run: data loading, model construction,
-curriculum training via AnnotHarmonyTrainer, final evaluation with probabilistic
+curriculum training via Trainer, final evaluation with probabilistic
 metrics, and weight serialization.
 """
 import argparse
@@ -11,19 +11,19 @@ import torch
 from pathlib import Path
 
 from crowdsegmenter.config import ExperimentConfig
-from crowdsegmenter.data.annotharmony_data import AnnotHarmonyDataLoader
-from crowdsegmenter.models.annot_harmony import AnnotHarmony
-from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
+from crowdsegmenter.data.crowdseg_data import CrowSegDataLoader
+from crowdsegmenter.models.crowdseg import CrowdSeg
+from crowdsegmenter.losses.noisy_label import NoisyLabelLoss
 from crowdsegmenter.training.trainer import Trainer
 from crowdsegmenter.utils.metrics import MetricTracker
 from crowdsegmenter.utils.reproducibility import set_seed
 
-def run_annot_harmony_experiment(config_path: str) -> None:
+def run_crowdseg_experiment(config_path: str) -> None:
     """
     :param config_path: Path to YAML config file.
     :return: None
     
-    This function trains and evaluates the AnnotHarmony model on multi-annotator
+    This function trains and evaluates the CrowdSeg model on multi-annotator
     segmentation data. It performs the following steps:
         1. Load Configuration & Setup
         2. Data Setup
@@ -43,18 +43,15 @@ def run_annot_harmony_experiment(config_path: str) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     
     # 2. Data Setup
-    data_manager = AnnotHarmonyDataLoader(cfg.data)
+    data_manager = CrowSegDataLoader(cfg.data)
     train_loader, val_loader, test_loader = data_manager.get_split_loaders()
 
     # 3. Model, Loss, and Optimizer Initialization
-    model = AnnotHarmony(cfg.model).to(device)
+    model = CrowdSeg(cfg.model).to(device)
 
-    criterion = TGCE_SSPS(
-        annotators=cfg.model.num_annotators,
-        classes=cfg.model.num_classes,
+    criterion = NoisyLabelLoss(
         ignored_value=cfg.data.ignored_value,
-        q=cfg.training.tgce_q,
-        lambda_factor=cfg.training.tgce_lambda,
+        alpha=cfg.training.alpha,
         smooth=cfg.training.smooth,
     ).to(device)
 
@@ -68,7 +65,7 @@ def run_annot_harmony_experiment(config_path: str) -> None:
         config=cfg.training,
     )
     
-    print(f"\n Starting AnnotHarmony training on {device}...")
+    print(f"\n Starting CrowdSeg training on {device}...")
     trained_model, history = trainer.fit()
 
     # 5. Final Evaluation on Source Test Set
@@ -78,7 +75,7 @@ def run_annot_harmony_experiment(config_path: str) -> None:
     
     metric_tracker = MetricTracker(cfg.training)
     metrics = metric_tracker.evaluation(trained_model, test_loader,device)
-    metric_tracker.print_full_report("AnnotHarmony Test", metrics, class_names)
+    metric_tracker.print_full_report("CrowdSeg Test", metrics, class_names)
 
     # 6. Save the final trained weights
     save_file = Path(output_path) / "model_final.pth"
@@ -86,8 +83,8 @@ def run_annot_harmony_experiment(config_path: str) -> None:
     print(f"\n Experiment completed. Results saved in: {output_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AnnotHarmony Training Script")
+    parser = argparse.ArgumentParser(description="CrowdSeg Training Script")
     parser.add_argument("--config", type=str, default="configs/base_experiment.yaml", help="Path to YAML config")
     args = parser.parse_args()
     
-    run_annot_harmony_experiment(args.config)
+    run_crowdseg_experiment(args.config)

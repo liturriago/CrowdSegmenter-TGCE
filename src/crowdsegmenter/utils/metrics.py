@@ -175,6 +175,17 @@ class MetricTracker:
         loader: DataLoader,
         device: str,
     ) -> Dict[str, Any]:
+        """
+        Computes segmentation metrics for a given model on a dataset.
+
+        Args:
+            model (nn.Module): The segmentation model to evaluate.
+            loader (DataLoader): The data loader for the dataset.
+            device (str): The device to use for evaluation (e.g., 'cuda' or 'cpu').
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the evaluation results.
+        """
 
         model.eval()
         all_seg_preds = []
@@ -184,9 +195,9 @@ class MetricTracker:
             for batch in loader:
                 images = batch[0].to(device)
                 masks = batch[1].to(device)
-                multihot = batch[2].to(device)
+                anns_ids = batch[2].to(device)
 
-                seg_pred, _  = model(images, multihot)
+                seg_pred, _  = model(images, anns_ids)
 
                 ref_mask = self.compute_probability_mask(masks)
 

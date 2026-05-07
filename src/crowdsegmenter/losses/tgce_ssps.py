@@ -14,7 +14,7 @@ class TGCE_SSPS(nn.Module):
     Args:
         annotators (int): Number of annotators (R).
         classes (int): Number of classes (K).
-        ignore_value (float): Value in annotations to ignore.
+        ignored_value (float): Value in annotations to ignore.
         q (float): Truncation parameter for generalized cross-entropy.
         lambda_factor (float): Scaling factor for the reliability term.
         smooth (float): Small constant to prevent division by zero.
@@ -24,7 +24,7 @@ class TGCE_SSPS(nn.Module):
         self,
         annotators: int = 3,
         classes: int = 2,
-        ignore_value: float = 0.6,
+        ignored_value: float = 0.6,
         q: float = 0.48029,
         lambda_factor: float = 1.0,
         smooth: float = 1e-7,
@@ -32,7 +32,7 @@ class TGCE_SSPS(nn.Module):
         super().__init__()
         self.K = classes
         self.R = annotators
-        self.ignore_value = ignore_value
+        self.ignored_value = ignored_value
         self.q = q
         self.smooth = smooth
         self.lambda_factor = lambda_factor
@@ -63,10 +63,10 @@ class TGCE_SSPS(nn.Module):
         N, _, H, W = y_pred_classes.shape
         annotations = annotations.reshape(N, self.K, self.R, H, W).contiguous()
 
-        # Mask invalid values (ignore_value)
-        valid_mask = torch.all(annotations != self.ignore_value, dim=1).float()
+        # Mask invalid values (ignored_value)
+        valid_mask = torch.all(annotations != self.ignored_value, dim=1).float()
         annotations = torch.where(
-            annotations != self.ignore_value,
+            annotations != self.ignored_value,
             annotations,
             torch.zeros_like(annotations),
         )

@@ -13,15 +13,15 @@ from crowdsegmenter.utils.formatter import format_time
 from crowdsegmenter.utils.train_phases import get_training_phase
 
 
-class AnnotHarmonyTrainer:
-    """Trainer for AnnotHarmony multi-annotator segmentation model.
+class Trainer:
+    """Trainer for multi-annotator segmentation model.
 
     Handles multi-phase curriculum training (gradual unfreezing), mixed-precision
     forward/backward passes, validation with probabilistic metrics, and best-checkpoint
     recovery.
 
     Attributes:
-        model (nn.Module): The segmentation model AnnotHarmony.
+        model (nn.Module): The segmentation model.
         train_loader (DataLoader): DataLoader for training data.
         val_loader (DataLoader): DataLoader for validation data.
         criterion (nn.Module): Loss function (e.g. TGCE_SSPS).
@@ -44,7 +44,7 @@ class AnnotHarmonyTrainer:
         device: torch.device,
         config: Any,
     ) -> None:
-        """Initialises the AnnotHarmonyTrainer.
+        """Initialises the Trainer.
 
         Args:
             model (nn.Module): The model to train.
@@ -121,6 +121,8 @@ class AnnotHarmonyTrainer:
                 self.optimizer, self.scheduler = get_training_phase(
                     self.model, self.config, phase=phase_idx
                 )
+                if self.config.model_name == 'CrowdSeg':
+                    self.criterion.min_trace = self.config.min_trace
 
             print(f"\nEpoch {epoch + 1}/{epochs}")
             print("-" * 40)
@@ -167,9 +169,9 @@ class AnnotHarmonyTrainer:
     def _train_epoch(self) -> Tuple[float, float, float]:
         """Runs a single training epoch with mixed-precision forward/backward.
 
-        Each batch is expected to yield ``(image, masks, onehot, gt)`` from
-        the ``AnnotHarmonyDataset``.  The model is called with both the image
-        and the annotator multi-hot vector; the TGCE_SSPS criterion receives the
+        Each batch is expected to yield ``(image, masks, one/multi hot-vector, gt)`` from
+        the dataset.  The model is called with both the image
+        and the annotator multi-hot vector; the criterion receives the
         tuple output ``(seg_pred, ann_pred)`` together with the annotator masks.
 
         Returns:
@@ -190,13 +192,13 @@ class AnnotHarmonyTrainer:
         for batch in pbar:
             images: torch.Tensor = batch[0].to(self.device)
             masks: torch.Tensor = batch[1].to(self.device)
-            multihot: torch.Tensor = batch[2].to(self.device)
+            anns_ids: torch.Tensor = batch[2].to(self.device)
 
             self.optimizer.zero_grad()
 
             with autocast(device_type=self.device.type):
                 # Forward: returns (seg_output, annotator_output)
-                seg_pred, ann_pred = self.model(images, multihot)
+                seg_pred, ann_pred = self.model(images, anns_ids)
                 loss = self.criterion(seg_pred, ann_pred, masks)
 
             self.scaler.scale(loss).backward()
@@ -242,9 +244,9 @@ class AnnotHarmonyTrainer:
         for batch in pbar:
             images: torch.Tensor = batch[0].to(self.device)
             masks: torch.Tensor = batch[1].to(self.device)
-            multihot: torch.Tensor = batch[2].to(self.device)
+            anns_ids: torch.Tensor = batch[2].to(self.device)
 
-            seg_pred, _ = self.model(images, multihot)
+            seg_pred, _ = self.model(images, anns_ids)
 
             prob_mask = self.tracker.compute_probability_mask(masks)
 

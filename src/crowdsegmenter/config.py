@@ -128,6 +128,9 @@ class TrainConfig(BaseModel):
     gamma: float = Field(default=0.94, description="Decay rate for learning rate", gt=0.0, le=1.0)
     tgce_q: float = Field(default=0.6704, description="Truncation parameter for TGCE loss", gt=0.0, le=1.0)
     tgce_lambda: float = Field(default=1.0, description="Scaling factor for reliability term", gt=0.0)
+    min_trace: bool = Field(default=True, description="Whether to add (True) or subtract (False) the trace regularization")
+    alpha: float = Field(default=0.1, description="Scaling factor for the trace regularization")
+    
     seed: int = Field(42, description="Random seed for reproducibility")
     
 
