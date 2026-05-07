@@ -11,7 +11,7 @@ import torch
 from pathlib import Path
 
 from crowdsegmenter.config import ExperimentConfig
-from crowdsegmenter.data.crowdseg_data import CrowSegDataLoader
+from crowdsegmenter.data.crowdseg_data import CrowdSegDataLoader
 from crowdsegmenter.models.crowdseg import CrowdSeg
 from crowdsegmenter.losses.noisy_label import NoisyLabelLoss
 from crowdsegmenter.training.trainer import Trainer
@@ -43,7 +43,7 @@ def run_crowdseg_experiment(config_path: str) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     
     # 2. Data Setup
-    data_manager = CrowSegDataLoader(cfg.data)
+    data_manager = CrowdSegDataLoader(cfg.data)
     train_loader, val_loader, test_loader = data_manager.get_split_loaders()
 
     # 3. Model, Loss, and Optimizer Initialization
