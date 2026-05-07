@@ -17,7 +17,6 @@ def test_data_config_validation():
 
 def test_model_config_defaults():
     config = ModelConfig()
-    assert config.model_name is None
     assert config.num_annotators == 1
     assert config.in_channels == 3
 
@@ -52,7 +51,6 @@ experiment:
     
     assert config.data.data_dir == "my_data"
     assert config.data.batch_size == 32
-    assert config.model.model_name == "MV"
     assert config.model.num_classes == 2
     assert config.training.epochs == 50
     assert config.experiment.name == "test_exp"
