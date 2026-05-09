@@ -134,6 +134,11 @@ class TrainConfig(BaseModel):
     min_trace: bool = Field(default=True, description="Whether to add (True) or subtract (False) the trace regularization")
     alpha: float = Field(default=0.1, description="Scaling factor for the trace regularization")
     
+    n_epochs_per_trial: int = Field(default=5, description="Epochs per Optuna trial", gt=0)
+    q_search_low: float = Field(default=0.1, description="Lower bound for q search", gt=0.0, le=1.0)
+    q_search_high: float = Field(default=0.99, description="Upper bound for q search", gt=0.0, le=1.0)
+    q_search_step: float = Field(default=0.01, description="Step size for q search", gt=0.0)
+    
     seed: int = Field(42, description="Random seed for reproducibility")
     
 
