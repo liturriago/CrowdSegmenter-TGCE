@@ -391,9 +391,9 @@ class Trainer:
         if (
             isinstance(phases, list)
             and len(phases) == 4
-            and all(isinstance(x, int) for x in phases)
+            and all(isinstance(x, (int, float)) for x in phases)
         ):
-            return phases
+            return [int(p) for p in phases]
 
         print("Warning: 'epochs_phases' not valid or missing in config.")
         print("Falling back to default: [0, 5, 10, 15]")
