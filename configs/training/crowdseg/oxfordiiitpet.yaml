@@ -5,7 +5,7 @@ data:
   masks_folder: 'masks'
   ground_truth_folder: 'ground_truth'
   load_annotators: True
-  load_ground_truth: False
+  load_ground_truth: True
   num_classes: 2
   num_annotators: 3
   image_size: [224,224]

@@ -384,6 +384,7 @@ class Trainer:
                 the curriculum.
         """
         phases = getattr(self.config, "epochs_phases", None)
+        print(f"Phases: {phases}")
 
         if isinstance(phases, list) and len(phases) == 0:
             return []
