@@ -1,31 +1,35 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 class MetricTracker:
     """Utility class for computing segmentation metrics with multi-annotator support.
 
-    All evaluation is performed using a probabilistic consensus mask derived
-    from all available annotators, making the protocol identical for both
-    AnnotHarmony and CrowdSeg models and suitable for datasets without
-    ground truth.
+    Provides two evaluation protocols:
 
-    The consensus mask is computed by averaging valid annotations per class
-    across annotators (ignoring sentinel pixels), producing a soft reference
-    in ``[0, 1]`` that captures inter-annotator uncertainty. Metrics are then
-    averaged over ``probabilistic_thresholds`` to produce threshold-independent
-    scores.
+    - **Probabilistic** (primary): consensus mask derived from all annotators,
+      metrics averaged over ``probabilistic_thresholds``. Used when no ground
+      truth is available — the standard protocol for both AnnotHarmony and
+      CrowdSeg in this codebase.
+
+    - **Ground-truth** (secondary): predictions compared directly against a
+      binary ground-truth mask ``[B, C, H, W]`` at a single fixed threshold.
+      Used when a dataset provides expert-validated labels for final
+      benchmarking or cross-dataset comparison.
+
+    Both protocols share the same ``calculate_metrics`` core and return
+    identical dict structures, so reporting methods work for either.
     """
 
     def __init__(self, config) -> None:
-        self.num_classes            = config.num_classes
-        self.num_annotators         = config.num_annotators
-        self.ignored_value          = config.ignored_value
-        self.threshold              = config.threshold
+        self.num_classes              = config.num_classes
+        self.num_annotators           = config.num_annotators
+        self.ignored_value            = config.ignored_value
+        self.threshold                = config.threshold
         self.probabilistic_thresholds = config.probabilistic_thresholds
-        self.smooth                 = config.smooth
+        self.smooth                   = config.smooth
 
     # ------------------------------------------------------------------ #
     #  Consensus mask                                                      #
@@ -60,34 +64,29 @@ class MetricTracker:
 
         b = masks.shape[0]
 
-        # Reshape to [B, num_annotators, num_classes, H, W]
         masks_reshaped = masks.view(
             b, self.num_annotators, self.num_classes, *masks.shape[2:]
         )
 
-        # Validity mask: 1 where annotation exists, 0 at sentinel pixels
         valid_mask  = (masks_reshaped != self.ignored_value).float()
-        valid_count = valid_mask.sum(dim=1)                    # [B, C, H, W]
-        masks_sum   = (masks_reshaped * valid_mask).sum(dim=1) # [B, C, H, W]
+        valid_count = valid_mask.sum(dim=1)
+        masks_sum   = (masks_reshaped * valid_mask).sum(dim=1)
 
-        # Average over annotators; fall back to 0 where no valid annotation exists
-        probability_mask = torch.where(
+        return torch.where(
             valid_count > 0,
             masks_sum / valid_count,
             torch.zeros_like(masks_sum),
         )
 
-        return probability_mask
-
     # ------------------------------------------------------------------ #
-    #  Metrics                                                             #
+    #  Core metric computation                                             #
     # ------------------------------------------------------------------ #
 
     def calculate_metrics(
         self,
         y_pred: torch.Tensor,
         y_true: torch.Tensor,
-        threshold: float = None,
+        threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Computes segmentation metrics at a single binarisation threshold.
 
@@ -97,9 +96,11 @@ class MetricTracker:
         Args:
             y_pred (torch.Tensor): Model predictions of shape
                 ``[B, num_classes, H, W]``.
-            y_true (torch.Tensor): Consensus probability mask of shape
-                ``[B, num_classes, H, W]``.
-            threshold (float): Binarisation cut-off. Defaults to
+            y_true (torch.Tensor): Reference mask of shape
+                ``[B, num_classes, H, W]``. May be a soft consensus mask
+                (probabilistic protocol) or a binary ground-truth mask
+                (GT protocol).
+            threshold (float | None): Binarisation cut-off. Defaults to
                 ``self.threshold``.
 
         Returns:
@@ -107,33 +108,27 @@ class MetricTracker:
 
                 - ``"avg"`` — scalar averages over batch and classes.
                 - ``"per_class"`` — per-class averages over the batch
-                  (as 1-D tensors of length ``num_classes``).
+                  (1-D tensors of length ``num_classes``).
         """
         threshold = threshold if threshold is not None else self.threshold
 
         y_pred = y_pred.contiguous().float()
         y_true = y_true.contiguous().float()
 
-        # Exclude sentinel pixels
-        mask = (y_true != self.ignored_value).float()
-
-        # Binarise
+        mask       = (y_true != self.ignored_value).float()
         y_true_bin = (y_true > threshold).float()
         y_pred_bin = (y_pred > threshold).float()
 
-        # Confusion-matrix components — [B, C]
         tp = (y_true_bin * y_pred_bin * mask).sum(dim=(2, 3))
         fp = ((1 - y_true_bin) * y_pred_bin * mask).sum(dim=(2, 3))
         fn = (y_true_bin * (1 - y_pred_bin) * mask).sum(dim=(2, 3))
         tn = ((1 - y_true_bin) * (1 - y_pred_bin) * mask).sum(dim=(2, 3))
 
-        # Per-sample, per-class metrics — [B, C]
         dice        = (2 * tp + self.smooth) / (2 * tp + fp + fn + self.smooth)
         jaccard     = (tp + self.smooth) / (tp + fp + fn + self.smooth)
         sensitivity = (tp + self.smooth) / (tp + fn + self.smooth)
         specificity = (tn + self.smooth) / (tn + fp + self.smooth)
 
-        # Replace NaNs with 0
         _nan_to_zero = lambda t: torch.where(
             torch.isnan(t), torch.zeros_like(t), t
         )
@@ -156,6 +151,10 @@ class MetricTracker:
             },
         }
 
+    # ------------------------------------------------------------------ #
+    #  Probabilistic protocol (no ground truth)                           #
+    # ------------------------------------------------------------------ #
+
     def compute_probabilistic_metrics(
         self,
         y_pred: torch.Tensor,
@@ -163,21 +162,20 @@ class MetricTracker:
     ) -> Dict[str, Any]:
         """Averages segmentation metrics across all probabilistic thresholds.
 
-        This is the primary evaluation method for both AnnotHarmony and
-        CrowdSeg. Sweeping over thresholds captures the full range of
-        possible consensus interpretations, producing a metric that does
+        Primary evaluation protocol for datasets without ground truth.
+        Sweeping thresholds over the consensus mask captures the full range
+        of possible annotation interpretations, producing a score that does
         not depend on a single arbitrary cut-off.
 
         Args:
-            y_pred (torch.Tensor): Model predictions of shape
-                ``[B, num_classes, H, W]``.
-            y_true (torch.Tensor): Consensus probability mask of shape
+            y_pred (torch.Tensor): Model predictions ``[B, num_classes, H, W]``.
+            y_true (torch.Tensor): Consensus probability mask
                 ``[B, num_classes, H, W]`` from
                 :meth:`compute_probability_mask`.
 
         Returns:
             Dict[str, Any]: Same structure as :meth:`calculate_metrics`,
-                with values averaged over all thresholds.
+                values averaged over all thresholds.
         """
         num_thresholds = len(self.probabilistic_thresholds)
         num_classes    = y_pred.shape[1]
@@ -202,10 +200,6 @@ class MetricTracker:
             "per_class": {k: v / num_thresholds for k, v in per_class_sums.items()},
         }
 
-    # ------------------------------------------------------------------ #
-    #  Evaluation loop                                                     #
-    # ------------------------------------------------------------------ #
-
     def evaluation(
         self,
         model: nn.Module,
@@ -216,8 +210,6 @@ class MetricTracker:
 
         Expects batches of the form ``(images, masks, anns_ids)`` where
         ``masks`` has shape ``[B, num_annotators * num_classes, H, W]``.
-        This layout is shared by both the AnnotHarmony and CrowdSeg
-        dataloaders after unification.
 
         Args:
             model (nn.Module): The segmentation model to evaluate.
@@ -231,26 +223,107 @@ class MetricTracker:
                 ``"avg"`` and ``"per_class"``.
         """
         model.eval()
-        all_seg_preds: List[torch.Tensor] = []
+        all_seg_preds:  List[torch.Tensor] = []
         all_prob_masks: List[torch.Tensor] = []
 
         with torch.no_grad():
             for batch in loader:
                 images   = batch[0].to(device)
-                masks    = batch[1].to(device)  # [B, A*C, H, W]
+                masks    = batch[1].to(device)
                 anns_ids = batch[2].to(device)
 
-                seg_pred, _   = model(images, anns_ids)
-
-                prob_mask = self.compute_probability_mask(masks)
+                output   = model(images, anns_ids)
+                seg_pred = output[0] if isinstance(output, tuple) else output
 
                 all_seg_preds.append(seg_pred.cpu())
-                all_prob_masks.append(prob_mask.cpu())
+                all_prob_masks.append(self.compute_probability_mask(masks).cpu())
 
-        seg_preds_cat  = torch.cat(all_seg_preds,  dim=0)
-        prob_masks_cat = torch.cat(all_prob_masks, dim=0)
+        return self.compute_probabilistic_metrics(
+            torch.cat(all_seg_preds,  dim=0),
+            torch.cat(all_prob_masks, dim=0),
+        )
 
-        return self.compute_probabilistic_metrics(seg_preds_cat, prob_masks_cat)
+    # ------------------------------------------------------------------ #
+    #  Ground-truth protocol                                               #
+    # ------------------------------------------------------------------ #
+
+    def compute_gt_metrics(
+        self,
+        y_pred: torch.Tensor,
+        y_true: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Computes metrics against a binary ground-truth mask at a fixed threshold.
+
+        Secondary evaluation protocol used when expert-validated ground-truth
+        labels are available (e.g. a held-out benchmark split). Unlike the
+        probabilistic protocol, no threshold sweep is performed — the single
+        ``self.threshold`` is used, reflecting the hard binary nature of the
+        ground-truth reference.
+
+        Args:
+            y_pred (torch.Tensor): Model predictions ``[B, num_classes, H, W]``.
+            y_true (torch.Tensor): Binary ground-truth masks
+                ``[B, num_classes, H, W]`` with values in ``{0, 1}``.
+
+        Returns:
+            Dict[str, Any]: Same structure as :meth:`calculate_metrics`.
+        """
+        return self.calculate_metrics(y_pred, y_true, self.threshold)
+
+    def evaluation_gt(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: str,
+    ) -> Dict[str, Any]:
+        """Runs inference and computes ground-truth metrics over a full dataset.
+
+        Expects batches of the form ``(images, masks, anns_ids, ground_truth)``
+        where ``ground_truth`` has shape ``[B, num_classes, H, W]``.
+        ``DataConfig.load_ground_truth`` must be ``True`` for the loader to
+        include this item.
+
+        Args:
+            model (nn.Module): The segmentation model to evaluate.
+            loader (DataLoader): DataLoader yielding
+                ``(images, masks, anns_ids, ground_truth)`` batches.
+            device (str): Device to run inference on.
+
+        Returns:
+            Dict[str, Any]: Ground-truth evaluation results with keys
+                ``"avg"`` and ``"per_class"``.
+
+        Raises:
+            ValueError: If batches do not contain a fourth item
+                (ground truth), indicating ``load_ground_truth=False``.
+        """
+        model.eval()
+        all_seg_preds: List[torch.Tensor] = []
+        all_gt_masks:  List[torch.Tensor] = []
+
+        with torch.no_grad():
+            for batch in loader:
+                if len(batch) < 4:
+                    raise ValueError(
+                        "Batch does not contain ground truth (batch length "
+                        f"{len(batch)} < 4). Set load_ground_truth=True in "
+                        "DataConfig."
+                    )
+
+                images      = batch[0].to(device)
+                anns_ids    = batch[2].to(device)
+                ground_truth = batch[3].to(device)   # [B, C, H, W]
+
+                output   = model(images, anns_ids)
+                seg_pred = output[0] if isinstance(output, tuple) else output
+
+                all_seg_preds.append(seg_pred.cpu())
+                all_gt_masks.append(ground_truth.cpu())
+
+        return self.compute_gt_metrics(
+            torch.cat(all_seg_preds, dim=0),
+            torch.cat(all_gt_masks,  dim=0),
+        )
 
     # ------------------------------------------------------------------ #
     #  Reporting                                                           #
@@ -264,11 +337,13 @@ class MetricTracker:
     ) -> None:
         """Prints a concise per-class metric summary for training logs.
 
+        Compatible with the output of both :meth:`compute_probabilistic_metrics`
+        and :meth:`compute_gt_metrics`.
+
         Args:
             prefix (str): Label for the evaluation phase
-                (e.g. ``"Val"``, ``"Test"``).
-            metrics (Dict[str, Any]): Output of
-                :meth:`compute_probabilistic_metrics`.
+                (e.g. ``"Val"``, ``"Test (GT)"``).
+            metrics (Dict[str, Any]): Output of any compute method.
             class_names (List[str]): Human-readable names for each class.
         """
         avg = metrics["avg"]
@@ -301,10 +376,12 @@ class MetricTracker:
     ) -> None:
         """Prints a detailed segmentation report for scientific evaluation.
 
+        Compatible with the output of both :meth:`compute_probabilistic_metrics`
+        and :meth:`compute_gt_metrics`.
+
         Args:
             prefix (str): Title for the report section.
-            metrics (Dict[str, Any]): Output of
-                :meth:`compute_probabilistic_metrics`.
+            metrics (Dict[str, Any]): Output of any compute method.
             class_names (List[str]): Human-readable names for each class.
         """
         print(f"\n{' REPORT: ' + prefix + ' ':=^85}")

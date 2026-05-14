@@ -3,8 +3,8 @@ Command-line script for training and evaluating AnnotHarmony on multi-annotator
 segmentation data.
 
 This script executes a single training run: data loading, model construction,
-curriculum training via AnnotHarmonyTrainer, final evaluation with probabilistic
-metrics, and weight serialization.
+curriculum training via Trainer, final evaluation with probabilistic metrics
+(and optionally ground-truth metrics), and weight serialization.
 """
 import argparse
 import torch
@@ -18,35 +18,53 @@ from crowdsegmenter.training.trainer import Trainer
 from crowdsegmenter.utils.metrics import MetricTracker
 from crowdsegmenter.utils.reproducibility import set_seed
 
+
 def run_annot_harmony_experiment(config_path: str) -> None:
+    """Trains and evaluates AnnotHarmony on multi-annotator segmentation data.
+
+    Stages:
+        1. Configuration loading and reproducibility setup.
+        2. Data loading (train / val / test splits).
+        3. Model and loss construction.
+        4. Curriculum training via :class:`Trainer`.
+        5. Final probabilistic evaluation on the test set.
+        6. Final ground-truth evaluation on the test set (when
+           ``config.data.load_ground_truth`` is ``True``).
+        7. Weight serialization.
+
+    Args:
+        config_path (str): Path to the YAML experiment configuration file.
     """
-    :param config_path: Path to YAML config file.
-    :return: None
-    
-    This function trains and evaluates the AnnotHarmony model on multi-annotator
-    segmentation data. It performs the following steps:
-        1. Load Configuration & Setup
-        2. Data Setup
-        3. Model, Loss, and Optimizer Initialization
-        4. Train model
-        5. Final Evaluation on Source Test Set
-        6. Save the final trained weights
-    """
-    # 1. Load Configuration & Setup
-    cfg = ExperimentConfig.from_yaml(config_path)
-    device = torch.device(cfg.training.device if torch.cuda.is_available() else "cpu")
-    
+    # ------------------------------------------------------------------ #
+    # 1. Configuration & setup                                            #
+    # ------------------------------------------------------------------ #
+    cfg    = ExperimentConfig.from_yaml(config_path)
+    device = torch.device(
+        cfg.training.device if torch.cuda.is_available() else "cpu"
+    )
+
     if cfg.training.seed is not None:
         set_seed(cfg.training.seed)
-        
+
     output_path = Path(cfg.experiment.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    # 2. Data Setup
-    data_manager = CrowdSegmenterDataLoader(cfg.data, mode="Annot-Harmony")
+
+    print(f"\n{'':=<60}")
+    print(f"  Experiment : {cfg.experiment.name}")
+    print(f"  Device     : {device}")
+    print(f"  Output     : {output_path}")
+    print(f"  GT eval    : {cfg.data.load_ground_truth}")
+    print(f"{'':=<60}\n")
+
+    # ------------------------------------------------------------------ #
+    # 2. Data                                                             #
+    # ------------------------------------------------------------------ #
+    data_manager = CrowdSegmenterDataLoader(cfg.data, mode="annotharmony")
     train_loader, val_loader, test_loader = data_manager.get_split_loaders()
 
-    # 3. Model, Loss, and Optimizer Initialization
+    # ------------------------------------------------------------------ #
+    # 3. Model & loss                                                     #
+    # ------------------------------------------------------------------ #
     model = AnnotHarmony(cfg.model).to(device)
 
     criterion = TGCE_SSPS(
@@ -58,7 +76,11 @@ def run_annot_harmony_experiment(config_path: str) -> None:
         smooth=cfg.training.smooth,
     ).to(device)
 
-    # 4. Train model
+    # ------------------------------------------------------------------ #
+    # 4. Training                                                         #
+    # ------------------------------------------------------------------ #
+    print(f"\n Starting AnnotHarmony training on {device}...\n")
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -67,27 +89,47 @@ def run_annot_harmony_experiment(config_path: str) -> None:
         device=device,
         config=cfg.training,
     )
-    
-    print(f"\n Starting AnnotHarmony training on {device}...")
+
     trained_model, history = trainer.fit()
 
-    # 5. Final Evaluation on Source Test Set
-    print("\n Generating Final Statistical Reports on Test Set...")
+    # ------------------------------------------------------------------ #
+    # 5. Final probabilistic evaluation on test set                       #
+    # ------------------------------------------------------------------ #
+    print("\n Generating final probabilistic report on test set...\n")
 
-    class_names = [f"Class {i}" for i in range(cfg.model.num_classes)]
-    
-    metric_tracker = MetricTracker(cfg.training)
-    metrics = metric_tracker.evaluation(trained_model, test_loader,device)
-    metric_tracker.print_full_report("AnnotHarmony Test", metrics, class_names)
+    class_names  = [f"Class {i}" for i in range(cfg.model.num_classes)]
+    tracker      = MetricTracker(cfg.training)
 
-    # 6. Save the final trained weights
-    save_file = Path(output_path) / "model_final.pth"
+    prob_metrics = tracker.evaluation(trained_model, test_loader, device)
+    tracker.print_full_report("AnnotHarmony Test — Probabilistic", prob_metrics, class_names)
+
+    # ------------------------------------------------------------------ #
+    # 6. Final ground-truth evaluation on test set (optional)             #
+    # ------------------------------------------------------------------ #
+    if cfg.data.load_ground_truth:
+        print("\n Generating final ground-truth report on test set...\n")
+
+        gt_metrics = tracker.evaluation_gt(trained_model, test_loader, device)
+        tracker.print_full_report("AnnotHarmony Test — Ground Truth", gt_metrics, class_names)
+        
+    # ------------------------------------------------------------------ #
+    # 7. Save weights                                                     #
+    # ------------------------------------------------------------------ #
+    save_file = output_path / "annot_harmony_final.pth"
     torch.save(trained_model.state_dict(), save_file)
-    print(f"\n Experiment completed. Results saved in: {output_path}")
+    print(f"\n Experiment complete. Weights saved to: {save_file}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AnnotHarmony Training Script")
-    parser.add_argument("--config", type=str, default="configs/base_experiment.yaml", help="Path to YAML config")
+    parser = argparse.ArgumentParser(
+        description="AnnotHarmony Training & Evaluation Script"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/training/annotharmony/oxfordiiitpet.yaml",
+        help="Path to the YAML experiment configuration file.",
+    )
     args = parser.parse_args()
-    
+
     run_annot_harmony_experiment(args.config)
