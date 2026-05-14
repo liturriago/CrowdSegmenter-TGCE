@@ -137,8 +137,10 @@ class TrainConfig(BaseModel):
     n_epochs_per_trial: int = Field(default=5, description="Epochs per Optuna trial", gt=0)
     q_search_low: float = Field(default=0.1, description="Lower bound for q search", gt=0.0, le=1.0)
     q_search_high: float = Field(default=0.99, description="Upper bound for q search", gt=0.0, le=1.0)
-    q_search_step: float = Field(default=0.01, description="Step size for q search", gt=0.0)
-    
+
+    alpha_search_low:  float = Field(default=0.01, description="Lower bound for alpha search", gt=0.0)
+    alpha_search_high: float = Field(default=2.0,  description="Upper bound for alpha search", gt=0.0)
+
     seed: int = Field(42, description="Random seed for reproducibility")
     
 

@@ -6,8 +6,8 @@ from typing import Dict, Any, Optional, List
 
 from crowdsegmenter.config import ExperimentConfig
 from crowdsegmenter.data.loader import CrowdSegmenterDataLoader
-from crowdsegmenter.models.annot_harmony import AnnotHarmony
-from crowdsegmenter.losses.tgce_ssps import TGCE_SSPS
+from crowdsegmenter.models.annot_harmony import CrowdSeg
+from crowdsegmenter.losses.noisy_label import NoisyLabelLoss
 from crowdsegmenter.training.trainer import Trainer
 from crowdsegmenter.utils.metrics import MetricTracker
 from crowdsegmenter.utils.reproducibility import set_seed
@@ -77,11 +77,11 @@ class OptunaTrainer(Trainer):
         return super().evaluate_gt(loader, prefix)
 
 
-class TGCESSPSTuner:
-    """Bayesian hyperparameter tuner for the ``q`` parameter of TGCE_SSPS.
+class NoisyLabelTuner:
+    """Bayesian hyperparameter tuner for the ``alpha`` parameter of NoisyLabelLoss.
 
     Loads the dataset once and runs ``n_trials`` Optuna trials, re-initialising
-    the model, loss, and :class:`OptunaTrainer` on every trial. The best ``q``
+    the model, loss, and :class:`OptunaTrainer` on every trial. The best ``alpha``
     is determined by the highest probabilistic validation Dice.
 
     When ``config.data.load_ground_truth`` is ``True``, a GT evaluation pass
@@ -104,8 +104,8 @@ class TGCESSPSTuner:
         config_path: str,
         n_trials: int = 50,
         n_epochs_per_trial: Optional[int] = None,
-        study_name: str = "tgce_ssps_q_optimization",
-        output_dir: str = "outputs/optuna/tgce_ssps",
+        study_name: str = "noisy_label_alpha_optimization",
+        output_dir: str = "outputs/optuna/noisy_label",
         seed: int = 42,
     ) -> None:
         self.config_path = config_path
@@ -128,7 +128,7 @@ class TGCESSPSTuner:
 
         # Dataset loaded once — not per trial
         data_manager = CrowdSegmenterDataLoader(
-            self.config.data, mode="Annot-Harmony"
+            self.config.data, mode="CrowdSeg"
         )
         self.train_loader, self.val_loader, _ = data_manager.get_split_loaders()
 
@@ -148,7 +148,7 @@ class TGCESSPSTuner:
     # ------------------------------------------------------------------ #
 
     def objective(self, trial: optuna.Trial) -> float:
-        """Samples ``q``, trains for ``n_epochs_per_trial``, returns best Dice.
+        """Samples ``alpha``, trains for ``n_epochs_per_trial``, returns best Dice.
 
         Args:
             trial (optuna.Trial): The Optuna trial object.
@@ -164,24 +164,23 @@ class TGCESSPSTuner:
         try:
             set_seed(self.config.training.seed + trial.number)
 
-            q = trial.suggest_float(
-                "q",
-                self.config.training.q_search_low,
-                self.config.training.q_search_high,
+            alpha = trial.suggest_float(
+                "alpha",
+                self.config.training.alpha_search_low,
+                self.config.training.alpha_search_high,
             )
 
-            print(f"\n[Trial {trial.number}] q = {q:.4f}")
+            print(f"\n[Trial {trial.number}] alpha = {alpha:.4f}")
             print("-" * 40)
 
             # Fresh model weights every trial
-            model = AnnotHarmony(self.config.model).to(self.device)
+            model = CrowdSeg(self.config.model).to(self.device)
 
-            criterion = TGCE_SSPS(
+            criterion = NoisyLabelLoss(
                 annotators=self.config.model.num_annotators,
                 classes=self.config.model.num_classes,
                 ignored_value=self.config.data.ignored_value,
-                q=q,
-                lambda_factor=self.config.training.tgce_lambda,
+                alpha=alpha,
                 smooth=self.config.training.smooth,
             ).to(self.device)
 
@@ -239,7 +238,7 @@ class TGCESSPSTuner:
         Returns:
             Dict[str, Any]: Dictionary with keys:
 
-                - ``"best_q"`` — the ``q`` value of the best trial.
+                - ``"best_alpha"`` — the ``alpha`` value of the best trial.
                 - ``"best_val_dice"`` — the corresponding Dice score.
                 - ``"trials"`` — list of per-trial result dicts.
         """
@@ -249,7 +248,7 @@ class TGCESSPSTuner:
 
         # ── Summary table ──────────────────────────────────────────────
         print(f"\n{' OPTIMISATION SUMMARY ':=^60}")
-        print(f"{'Trial':<8} | {'q':<8} | {'Val Dice':<12} | {'State':<12}")
+        print(f"{'Trial':<8} | {'alpha':<8} | {'Val Dice':<12} | {'State':<12}")
         print("-" * 46)
 
         sorted_trials = sorted(
@@ -260,13 +259,13 @@ class TGCESSPSTuner:
 
         trials_data: List[Dict[str, Any]] = []
         for t in sorted_trials:
-            q_val  = t.params.get("q", "N/A")
+            alpha_val  = t.params.get("alpha", "N/A")
             value  = t.value if t.value is not None else 0.0
             state  = t.state.name
-            print(f"{t.number:<8} | {q_val:<8} | {value:<12.4f} | {state:<12}")
+            print(f"{t.number:<8} | {alpha_val:<8} | {value:<12.4f} | {state:<12}")
             trials_data.append({
                 "number": t.number,
-                "q":      t.params.get("q"),
+                "alpha":      t.params.get("alpha"),
                 "value":  t.value,
                 "state":  state,
             })
@@ -274,16 +273,16 @@ class TGCESSPSTuner:
         print("=" * 60)
 
         best_trial    = self.study.best_trial
-        best_q        = best_trial.params["q"]
+        best_alpha    = best_trial.params["alpha"]
         best_val_dice = best_trial.value if best_trial.value is not None else 0.0
 
-        print(f"\n Best q : {best_q}  |  Val Dice (prob.) : {best_val_dice:.4f}")
+        print(f"\n Best alpha : {best_alpha}  |  Val Dice (prob.) : {best_val_dice:.4f}")
 
         # ── Post-hoc evaluation of the best model ─────────────────────
         if self.best_model_weights is not None:
             print("\n Evaluating best trial model on validation set...\n")
 
-            best_model = AnnotHarmony(self.config.model).to(self.device)
+            best_model = CrowdSeg(self.config.model).to(self.device)
             best_model.load_state_dict(self.best_model_weights)
 
             tracker     = MetricTracker(self.config.training)
@@ -302,7 +301,7 @@ class TGCESSPSTuner:
 
         # ── Persist results ────────────────────────────────────────────
         results_dict: Dict[str, Any] = {
-            "best_q":        best_q,
+            "best_alpha":        best_alpha,
             "best_val_dice": best_val_dice,
             "trials":        trials_data,
         }

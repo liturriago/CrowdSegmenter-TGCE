@@ -45,6 +45,8 @@ training:
   gamma: 0.94
   min_trace: True
   alpha: 0.1
+  alpha_search_low: 0.01
+  alpha_search_high: 1.0
   seed: 42
   device: "cuda" 
 
